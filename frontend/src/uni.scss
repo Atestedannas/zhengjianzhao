@@ -1,0 +1,43 @@
+/* uView Plus 主题色变量 */
+$u-primary: #4F6EF7;
+$u-warning: #F59E0B;
+$u-success: #10B981;
+$u-error: #EF4444;
+$u-info: #6B7280;
+
+/* 品牌色 */
+$brand-primary: #4F6EF7;
+$brand-secondary: #7B5CF7;
+$brand-gradient: linear-gradient(135deg, #4F6EF7, #7B5CF7);
+$brand-gradient-warm: linear-gradient(135deg, #4F6EF7, #EC4899);
+
+/* 自定义全局样式变量 */
+$page-bg: #F0F2F8;
+$card-bg: #FFFFFF;
+$text-primary: #1A1A2E;
+$text-secondary: #64748B;
+$text-hint: #94A3B8;
+$border-color: #E2E8F0;
+$shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
+$shadow-md: 0 4px 16px rgba(0, 0, 0, 0.08), 0 2px 4px rgba(0, 0, 0, 0.04);
+$shadow-lg: 0 10px 40px rgba(0, 0, 0, 0.12), 0 4px 8px rgba(0, 0, 0, 0.06);
+
+/* 裁剪组件相关 */
+$crop-mask-bg: rgba(0, 0, 0, 0.6);
+$crop-border-color: #FFFFFF;
+$crop-corner-size: 20rpx;
+
+/* 页面间距 */
+$spacing-xs: 8rpx;
+$spacing-sm: 16rpx;
+$spacing-md: 24rpx;
+$spacing-lg: 32rpx;
+$spacing-xl: 48rpx;
+$spacing-2xl: 64rpx;
+
+/* 圆角 */
+$radius-sm: 8rpx;
+$radius-md: 16rpx;
+$radius-lg: 24rpx;
+$radius-xl: 32rpx;
+$radius-round: 50%;

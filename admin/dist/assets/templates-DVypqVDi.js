@@ -1,0 +1,1 @@
+import{K as a,a3 as s,a4 as p,a5 as n,a6 as l}from"./index-UloxHWEl.js";function u(){return a("/templates")}function m(t){return l("/templates",t)}function o(t,e){return n(`/templates/${t}`,e)}function c(t){return s(`/templates/${t}`)}function i(t,e){return p(`/templates/${t}/toggle`,{is_active:e})}export{m as c,c as d,u as g,i as t,o as u};

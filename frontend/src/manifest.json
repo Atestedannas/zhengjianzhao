@@ -1,0 +1,33 @@
+{
+  "name": "照片合规处理",
+  "appid": "__UNI__PHOTO_APP",
+  "description": "教师考编、征兵、公务员等报名照片一键合规处理",
+  "versionName": "1.0.0",
+  "versionCode": "100",
+  "transformPx": false,
+  "mp-weixin": {
+    "appid": "wx0000000000000000",
+    "setting": {
+      "urlCheck": true,
+      "es6": true,
+      "postcss": true,
+      "minified": true
+    },
+    "usingComponents": true,
+    "permission": {
+      "scope.writePhotosAlbum": {
+        "desc": "保存处理后的照片到相册"
+      }
+    }
+  },
+  "h5": {
+    "title": "照片合规处理",
+    "router": {
+      "mode": "history",
+      "base": "/m/"
+    },
+    "devServer": {
+      "port": 8080
+    }
+  }
+}

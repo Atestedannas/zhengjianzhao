@@ -1,0 +1,70 @@
+# ============================================================
+# 照片合规处理系统 — Git 忽略规则
+# 原则：密钥、大模型文件、运行时产物、依赖目录 一律不进仓库
+# ============================================================
+
+# ---------- 密钥 / 环境配置（绝不提交）----------
+.env
+.env.*
+!.env.example
+!**/.env.example
+*.pem
+*.key
+*.p12
+id_rsa*
+id_ed25519*
+
+# ---------- 大模型文件 ----------
+# GitHub 单文件上限 100MB，这些文件（168MB / 168MB / 214MB / 85MB）永远进不了仓库；
+# 服务器 /opt/zhengjianzhao/photo-zhijianzhao/backend/ 下已有，更新代码时不会被动到。
+*.onnx
+*.task
+*.pth
+*.pt
+*.h5
+*.bin
+*.safetensors
+# 注意：不要写 `models/` —— 父目录一旦被忽略，里面的 .gitkeep 就无法再被加回来
+!backend/models/.gitkeep
+
+# ---------- Python ----------
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+.venv/
+venv/
+env/
+
+# ---------- Node / 前端依赖 ----------
+node_modules/
+.pnpm-store/
+*.tsbuildinfo
+.vite/
+
+# ---------- 运行时产物 ----------
+backend/temp/
+backend/logs/
+backend/data/
+*.log
+frontend/dist/build/h5_backup_before_daily_bonus/
+
+# ---------- 压缩包 / 误放的构建产物 ----------
+# admin/node_modules.zip（86MB）、admin/dist.zip 是本地打包备份，不进仓库
+*.zip
+*.7z
+*.rar
+*.tar.gz
+# admin/src/dist/ 是误复制进源码目录的一整套构建产物（源码里没有任何引用）
+admin/src/dist/
+
+# ---------- 编辑器 / 系统 ----------
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini

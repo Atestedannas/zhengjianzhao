@@ -1,0 +1,174 @@
+# ============================================================
+# 照片合规处理系统 — Docker Compose 部署配置
+# 启动: docker compose up -d
+# 停止: docker compose down
+# 日志: docker compose logs -f backend
+# ============================================================
+
+services:
+  # ======================== Nginx 反向代理 ========================
+  nginx:
+    image: nginx:1.25-alpine
+    container_name: photo-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ../deploy/nginx.conf:/etc/nginx/nginx.conf:ro
+      # 移动端 H5 用户端（uni-app 构建，base=/m/）→ /m/
+      - ../frontend/dist/build/h5:/usr/share/nginx/m:ro
+      # 旧版单文件桌面页 → /web/（保留备份入口）
+      - ../frontend/web:/usr/share/nginx/web:ro
+      # PC 专版（Vue3 构建，base=/web-pc/）→ /web-pc/（独立链接）
+      - ../web-pc/dist:/usr/share/nginx/web-pc:ro
+      # 管理后台 → /admin/
+      - ../admin/dist:/usr/share/nginx/admin:ro
+      - nginx_logs:/var/log/nginx
+    depends_on:
+      - backend
+    networks:
+      - photo-network
+
+  # ======================== FastAPI 后端 ========================
+  backend:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    container_name: photo-backend
+    restart: unless-stopped
+    command: >
+      gunicorn app.main:app
+      -w 4
+      -k uvicorn.workers.UvicornWorker
+      -b 0.0.0.0:8000
+      --timeout 300
+      --graceful-timeout 30
+      --keep-alive 5
+      --access-logfile -
+      --error-logfile -
+    env_file:
+      - ../backend/.env
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ../backend/app:/app/app:ro
+      - temp_data:/data/temp
+      - model_data:/root/.u2net
+    healthcheck:
+      # 后端真实路由是 /health（不在 /api/v1 下）
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - photo-network
+
+  # ======================== MySQL 8.0 ========================
+  mysql:
+    image: mysql:8.0
+    container_name: photo-mysql
+    restart: unless-stopped
+    # 仅绑定 127.0.0.1，供宿主机本地开发（如 Windows 上跑 uvicorn）连接，
+    # 不对公网暴露 3306。容器之间仍通过 photo-network 用服务名 mysql 互访。
+    ports:
+      - "127.0.0.1:3306:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: PhotoRoot@2026!Secure
+      MYSQL_DATABASE: photo_service
+      MYSQL_USER: photo_app
+      MYSQL_PASSWORD: PhotoApp@2026!Secure
+    command: >
+      --default-authentication-plugin=mysql_native_password
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_unicode_ci
+      --max_connections=200
+      --innodb_buffer_pool_size=256M
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ../deploy/mysql-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-pPhotoRoot@2026!Secure"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - photo-network
+
+  # ======================== Redis 7 ========================
+  redis:
+    image: redis:7-alpine
+    container_name: photo-redis
+    restart: unless-stopped
+    # 同样仅绑定 127.0.0.1，供宿主机本地开发连接，不对公网暴露
+    ports:
+      - "127.0.0.1:6379:6379"
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - photo-network
+
+  # ======================== Celery Beat（定时任务调度） ========================
+  celery-beat:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    container_name: photo-celery-beat
+    restart: unless-stopped
+    command: celery -A app.tasks.celery_app beat -l info
+    env_file:
+      - ../backend/.env
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - temp_data:/data/temp
+    networks:
+      - photo-network
+
+  # ======================== Celery Worker（异步任务执行） ========================
+  celery-worker:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    container_name: photo-celery-worker
+    restart: unless-stopped
+    command: celery -A app.tasks.celery_app worker -l info -c 2 --max-tasks-per-child 100
+    env_file:
+      - ../backend/.env
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - temp_data:/data/temp
+    networks:
+      - photo-network
+
+# ======================== 数据卷 ========================
+volumes:
+  mysql_data:
+    driver: local
+  redis_data:
+    driver: local
+  temp_data:
+    driver: local
+  model_data:
+    driver: local
+  nginx_logs:
+    driver: local
+
+# ======================== 网络 ========================
+networks:
+  photo-network:
+    driver: bridge

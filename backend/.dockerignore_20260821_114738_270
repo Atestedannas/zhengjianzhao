@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# 环境与密钥
+.env
+.env.*
+
+# 依赖缓存
+.pip/
+pip-wheel-metadata/
+
+# 日志
+*.log
+logs/
+
+# 临时目录
+/data/temp/
+temp/
+static/temp/
+
+# 测试与文档
+tests/
+.git/
+.gitignore
+README.md
+
+# 说明：*.onnx 模型文件未在此排除。
+# Dockerfile 通过显式 COPY u2net.onnx / u2net_human_seg.onnx 到 /root/.u2net/，
+# .dockerignore 规则作用于所有 COPY 指令，排除 *.onnx 会导致构建失败。
+# 模型文件体积(176MB)通过构建上下文边界控制，避免重复打包。

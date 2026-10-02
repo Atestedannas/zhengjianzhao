@@ -1,0 +1,34 @@
+{
+  "timestamp": "2026-08-18T07:15:40.070903",
+  "server": "http://119.91.157.252:8081",
+  "results": [
+    {
+      "test": "换背景(无美颜)",
+      "status": "FAIL",
+      "details": {
+        "error": "{'detail': {'code': 401, 'message': '未提供认证凭据', 'data': None}}"
+      }
+    },
+    {
+      "test": "单独美颜",
+      "status": "FAIL",
+      "details": {
+        "error": "{'detail': {'code': 401, 'message': '未提供认证凭据', 'data': None}}"
+      }
+    },
+    {
+      "test": "换背景+美颜组合",
+      "status": "FAIL",
+      "details": {
+        "error": "{'detail': {'code': 401, 'message': '未提供认证凭据', 'data': None}}"
+      }
+    }
+  ],
+  "summary": {
+    "total": 3,
+    "pass": 0,
+    "fail": 3,
+    "warn": 0,
+    "error": 0
+  }
+}

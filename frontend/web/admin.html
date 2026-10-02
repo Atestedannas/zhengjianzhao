@@ -1,0 +1,1289 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PhotoService Admin</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg-deep: #080c12;
+  --bg-surface: #111820;
+  --bg-card: #18212b;
+  --bg-card-hover: #1d2835;
+  --bg-input: #0d141c;
+  --border: #1f2d3d;
+  --border-focus: #39bae6;
+  --accent: #39bae6;
+  --accent-glow: rgba(57, 186, 230, 0.15);
+  --success: #a6e22e;
+  --danger: #f92672;
+  --warning: #e6db74;
+  --text-primary: #d9e0e8;
+  --text-secondary: #7a8899;
+  --text-muted: #4a5568;
+  --font-mono: 'JetBrains Mono', 'Consolas', monospace;
+  --font-sans: 'DM Sans', -apple-system, sans-serif;
+  --radius-sm: 4px;
+  --radius: 8px;
+  --radius-lg: 12px;
+  --shadow-card: 0 1px 3px rgba(0,0,0,0.4), 0 1px 2px rgba(0,0,0,0.3);
+  --shadow-elevated: 0 4px 12px rgba(0,0,0,0.5), 0 2px 4px rgba(0,0,0,0.4);
+  --transition: 150ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  background: var(--bg-deep);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ---- Login Screen ---- */
+.login-screen {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  background: radial-gradient(ellipse at 50% 0%, #13202d 0%, var(--bg-deep) 70%);
+  position: relative;
+  overflow: hidden;
+}
+
+.login-screen::before {
+  content: '';
+  position: absolute;
+  top: -50%;
+  left: -50%;
+  width: 200%;
+  height: 200%;
+  background: 
+    repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(57,186,230,0.02) 2px, rgba(57,186,230,0.02) 4px),
+    repeating-linear-gradient(90deg, transparent, transparent 2px, rgba(57,186,230,0.02) 2px, rgba(57,186,230,0.02) 4px);
+  pointer-events: none;
+}
+
+.login-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 48px 40px;
+  width: 400px;
+  max-width: 90vw;
+  position: relative;
+  z-index: 1;
+  box-shadow: var(--shadow-elevated), 0 0 60px rgba(57,186,230,0.05);
+}
+
+.login-card .logo {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent);
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+
+.login-card h1 {
+  font-family: var(--font-sans);
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-bottom: 4px;
+  letter-spacing: -0.02em;
+}
+
+.login-card .subtitle {
+  font-size: 14px;
+  color: var(--text-secondary);
+  margin-bottom: 32px;
+}
+
+.login-card .field {
+  margin-bottom: 20px;
+}
+
+.login-card label {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-bottom: 8px;
+}
+
+.login-card input {
+  width: 100%;
+  padding: 12px 16px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 14px;
+  outline: none;
+  transition: border-color var(--transition), box-shadow var(--transition);
+}
+
+.login-card input:focus {
+  border-color: var(--border-focus);
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+
+.login-card .btn-login {
+  width: 100%;
+  padding: 12px;
+  background: var(--accent);
+  color: #080c12;
+  border: none;
+  border-radius: var(--radius);
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  letter-spacing: 0.05em;
+  transition: all var(--transition);
+  margin-top: 8px;
+}
+
+.login-card .btn-login:hover {
+  background: #4dc8f0;
+  box-shadow: 0 0 20px var(--accent-glow);
+}
+
+.login-error {
+  color: var(--danger);
+  font-size: 13px;
+  margin-top: 12px;
+  text-align: center;
+  min-height: 20px;
+}
+
+/* ---- Dashboard ---- */
+.dashboard {
+  display: none;
+  min-height: 100vh;
+}
+
+/* Top Bar */
+.topbar {
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border);
+  padding: 0 32px;
+  height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  backdrop-filter: blur(12px);
+}
+
+.topbar .brand {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+  letter-spacing: 0.12em;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.topbar .brand .dot {
+  width: 8px;
+  height: 8px;
+  background: var(--success);
+  border-radius: 50%;
+  box-shadow: 0 0 8px var(--success);
+  animation: pulse-dot 2s ease-in-out infinite;
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.topbar .user-info {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.topbar .user-info .role {
+  font-size: 11px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  background: var(--bg-card);
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+}
+
+.topbar .btn-logout {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  padding: 6px 16px;
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all var(--transition);
+}
+
+.topbar .btn-logout:hover {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+/* Main Content */
+.main-content {
+  padding: 32px;
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
+/* Stats Row */
+.stats-row {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+  margin-bottom: 32px;
+}
+
+.stat-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px 24px;
+  transition: border-color var(--transition);
+}
+
+.stat-card:hover {
+  border-color: var(--border-focus);
+}
+
+.stat-card .stat-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-bottom: 8px;
+}
+
+.stat-card .stat-value {
+  font-family: var(--font-mono);
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.stat-card .stat-sub {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-top: 4px;
+}
+
+/* Section */
+.section {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+
+.section-header {
+  padding: 20px 24px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.section-header h2 {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.search-box {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.search-box input {
+  padding: 8px 14px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  outline: none;
+  width: 240px;
+  transition: border-color var(--transition);
+}
+
+.search-box input:focus {
+  border-color: var(--border-focus);
+}
+
+.search-box .btn-search {
+  padding: 8px 16px;
+  background: var(--bg-card-hover);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all var(--transition);
+}
+
+.search-box .btn-search:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* Table */
+.table-wrap {
+  overflow-x: auto;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+thead th {
+  padding: 12px 20px;
+  text-align: left;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+tbody td {
+  padding: 14px 20px;
+  font-size: 13px;
+  color: var(--text-primary);
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+tbody tr {
+  transition: background var(--transition);
+}
+
+tbody tr:hover {
+  background: var(--bg-card-hover);
+}
+
+.user-nickname {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.user-id {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.free-count {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.free-count.unlimited {
+  color: var(--accent);
+}
+
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 100px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.badge-active {
+  background: rgba(166, 226, 46, 0.1);
+  color: var(--success);
+  border: 1px solid rgba(166, 226, 46, 0.2);
+}
+
+.badge-inactive {
+  background: rgba(249, 38, 114, 0.1);
+  color: var(--danger);
+  border: 1px solid rgba(249, 38, 114, 0.2);
+}
+
+.badge-unlimited {
+  background: rgba(57, 186, 230, 0.1);
+  color: var(--accent);
+  border: 1px solid rgba(57, 186, 230, 0.2);
+}
+
+/* Action Buttons */
+.actions {
+  display: flex;
+  gap: 6px;
+}
+
+.btn-action {
+  padding: 5px 12px;
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: var(--bg-card-hover);
+  color: var(--text-secondary);
+  transition: all var(--transition);
+  white-space: nowrap;
+}
+
+.btn-action:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.btn-action.danger:hover {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.btn-action.unlimited-set {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-glow);
+}
+
+.btn-action.unlimited-set:hover {
+  border-color: var(--warning);
+  color: var(--warning);
+  background: rgba(230, 219, 116, 0.1);
+}
+
+/* Pagination */
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 24px;
+  border-top: 1px solid var(--border);
+}
+
+.pagination .page-info {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+}
+
+.pagination .page-btns {
+  display: flex;
+  gap: 4px;
+}
+
+.pagination button {
+  padding: 6px 14px;
+  background: var(--bg-card-hover);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all var(--transition);
+}
+
+.pagination button:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.pagination button:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.pagination button.active {
+  background: var(--accent-glow);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* Toast */
+.toast-container {
+  position: fixed;
+  top: 24px;
+  right: 24px;
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.toast {
+  padding: 14px 20px;
+  border-radius: var(--radius);
+  font-size: 13px;
+  font-weight: 500;
+  animation: slideIn 0.25s ease-out;
+  max-width: 400px;
+  box-shadow: var(--shadow-elevated);
+}
+
+.toast.success {
+  background: rgba(166, 226, 46, 0.12);
+  border: 1px solid rgba(166, 226, 46, 0.3);
+  color: var(--success);
+}
+
+.toast.error {
+  background: rgba(249, 38, 114, 0.12);
+  border: 1px solid rgba(249, 38, 114, 0.3);
+  color: var(--danger);
+}
+
+.toast.info {
+  background: rgba(57, 186, 230, 0.12);
+  border: 1px solid rgba(57, 186, 230, 0.3);
+  color: var(--accent);
+}
+
+@keyframes slideIn {
+  from { transform: translateX(100%); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+
+/* Modal */
+.modal-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.6);
+  z-index: 1000;
+  align-items: center;
+  justify-content: center;
+  backdrop-filter: blur(4px);
+}
+
+.modal-overlay.active {
+  display: flex;
+}
+
+.modal {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 32px;
+  width: 420px;
+  max-width: 90vw;
+  box-shadow: var(--shadow-elevated);
+}
+
+.modal h3 {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-bottom: 20px;
+}
+
+.modal .field {
+  margin-bottom: 16px;
+}
+
+.modal label {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: 6px;
+}
+
+.modal input {
+  width: 100%;
+  padding: 10px 14px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 14px;
+  outline: none;
+}
+
+.modal input:focus {
+  border-color: var(--border-focus);
+}
+
+.modal .btn-row {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 24px;
+}
+
+.modal .btn-row button {
+  padding: 10px 20px;
+  border-radius: var(--radius);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  transition: all var(--transition);
+}
+
+.btn-cancel {
+  background: transparent;
+  color: var(--text-secondary);
+}
+
+.btn-cancel:hover {
+  border-color: var(--text-secondary);
+}
+
+.btn-confirm {
+  background: var(--accent);
+  color: #080c12;
+  border-color: var(--accent) !important;
+}
+
+.btn-confirm:hover {
+  background: #4dc8f0;
+}
+
+.btn-confirm.danger {
+  background: var(--danger);
+  border-color: var(--danger) !important;
+}
+
+.btn-confirm.danger:hover {
+  background: #ff4785;
+}
+
+/* Loading state */
+.loading-overlay {
+  display: none;
+  position: absolute;
+  inset: 0;
+  background: rgba(8, 12, 18, 0.7);
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+}
+
+.loading-overlay.active {
+  display: flex;
+}
+
+.spinner {
+  width: 32px;
+  height: 32px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.empty-state {
+  text-align: center;
+  padding: 60px 20px;
+  color: var(--text-muted);
+}
+
+.empty-state .empty-icon {
+  font-size: 40px;
+  margin-bottom: 12px;
+  opacity: 0.4;
+}
+
+.empty-state p {
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .stats-row {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .main-content {
+    padding: 16px;
+  }
+  .section-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .search-box input {
+    width: 100%;
+  }
+  .topbar {
+    padding: 0 16px;
+  }
+}
+</style>
+</head>
+<body>
+
+<!-- ==================== Login Screen ==================== -->
+<div class="login-screen" id="loginScreen">
+  <div class="login-card">
+    <div class="logo">PhotoService</div>
+    <h1>管理后台</h1>
+    <p class="subtitle">输入管理员凭据以继续</p>
+    <div class="field">
+      <label>用户名</label>
+      <input type="text" id="loginUsername" placeholder="admin" autocomplete="username">
+    </div>
+    <div class="field">
+      <label>密码</label>
+      <input type="password" id="loginPassword" placeholder="········" autocomplete="current-password">
+    </div>
+    <button class="btn-login" id="btnLogin" onclick="doLogin()">登 录</button>
+    <div class="login-error" id="loginError"></div>
+  </div>
+</div>
+
+<!-- ==================== Dashboard ==================== -->
+<div class="dashboard" id="dashboard">
+  <!-- Top Bar -->
+  <div class="topbar">
+    <div class="brand">
+      <span class="dot"></span>
+      PhotoService Admin
+    </div>
+    <div class="user-info">
+      <span class="role" id="adminRole">super_admin</span>
+      <span style="font-family:var(--font-mono);font-size:13px;color:var(--text-secondary)" id="adminName">--</span>
+      <button class="btn-logout" onclick="doLogout()">退出</button>
+    </div>
+  </div>
+
+  <!-- Main Content -->
+  <div class="main-content">
+    <!-- Stats -->
+    <div class="stats-row">
+      <div class="stat-card">
+        <div class="stat-label">用户总数</div>
+        <div class="stat-value" id="statTotal">--</div>
+        <div class="stat-sub">所有注册用户</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">活跃用户</div>
+        <div class="stat-value" id="statActive">--</div>
+        <div class="stat-sub">状态正常</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">无限次数</div>
+        <div class="stat-value" id="statUnlimited">--</div>
+        <div class="stat-sub">free_count = -1</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">总处理量</div>
+        <div class="stat-value" id="statProcessed">--</div>
+        <div class="stat-sub">历史记录数</div>
+      </div>
+    </div>
+
+    <!-- User Table -->
+    <div class="section">
+      <div class="section-header">
+        <h2>用户管理</h2>
+        <div class="search-box">
+          <input type="text" id="searchKeyword" placeholder="搜索昵称..." onkeydown="if(event.key==='Enter')searchUsers()">
+          <button class="btn-search" onclick="searchUsers()">搜索</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>昵称</th>
+              <th>平台</th>
+              <th>免费次数</th>
+              <th>累计赠送</th>
+              <th>余额</th>
+              <th>状态</th>
+              <th>最近登录</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="userTableBody">
+            <tr><td colspan="9" class="empty-state"><div class="empty-icon">—</div><p>加载中...</p></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="pagination" id="pagination">
+        <div class="page-info">--</div>
+        <div class="page-btns"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== Adjust Free Count Modal ==================== -->
+<div class="modal-overlay" id="adjustModal">
+  <div class="modal">
+    <h3>调整免费次数</h3>
+    <p style="font-size:13px;color:var(--text-secondary);margin-bottom:16px">
+      用户: <strong id="modalUserName" style="color:var(--text-primary)">--</strong>
+      &nbsp;|&nbsp; 当前: <strong id="modalCurrentCount" style="font-family:var(--font-mono);color:var(--accent)">--</strong>
+    </p>
+    <div class="field">
+      <label>调整量 (正数增加, 负数减少)</label>
+      <input type="number" id="adjustDelta" value="10" placeholder="输入次数">
+    </div>
+    <div class="field">
+      <label>原因</label>
+      <input type="text" id="adjustReason" value="管理员手动调整" placeholder="调整原因">
+    </div>
+    <div class="btn-row">
+      <button class="btn-cancel" onclick="closeAdjustModal()">取消</button>
+      <button class="btn-confirm" onclick="confirmAdjust()">确认调整</button>
+    </div>
+  </div>
+</div>
+
+<!-- Toast Container -->
+<div class="toast-container" id="toastContainer"></div>
+
+<script>
+// ==================== State ====================
+const API_BASE = '/api/v1/admin';
+let accessToken = '';
+let adminInfo = null;
+let currentPage = 1;
+let currentKeyword = '';
+let currentAdjustUserId = null;
+let currentAdjustUserName = '';
+let currentAdjustCount = 0;
+
+// ==================== Helpers ====================
+function showToast(msg, type = 'info') {
+  const container = document.getElementById('toastContainer');
+  const toast = document.createElement('div');
+  toast.className = 'toast ' + type;
+  toast.textContent = msg;
+  container.appendChild(toast);
+  setTimeout(() => {
+    toast.style.opacity = '0';
+    toast.style.transform = 'translateX(100%)';
+    toast.style.transition = 'all 0.25s ease-out';
+    setTimeout(() => toast.remove(), 300);
+  }, 3000);
+}
+
+function formatDate(ts) {
+  if (!ts) return '--';
+  try {
+    const d = new Date(ts);
+    if (isNaN(d.getTime())) return ts;
+    return d.toLocaleDateString('zh-CN', { month:'2-digit', day:'2-digit' }) + ' ' +
+           d.toLocaleTimeString('zh-CN', { hour:'2-digit', minute:'2-digit' });
+  } catch(e) { return ts; }
+}
+
+function apiHeaders() {
+  const h = { 'Content-Type': 'application/json' };
+  if (accessToken) h['Authorization'] = 'Bearer ' + accessToken;
+  return h;
+}
+
+async function apiFetch(url, opts = {}) {
+  const res = await fetch(url, { ...opts, headers: { ...apiHeaders(), ...(opts.headers || {}) } });
+  if (res.status === 401) {
+    accessToken = '';
+    showLogin();
+    throw new Error('登录已过期，请重新登录');
+  }
+  return res;
+}
+
+// ==================== Login ====================
+function showLogin() {
+  document.getElementById('loginScreen').style.display = 'flex';
+  document.getElementById('dashboard').style.display = 'none';
+  accessToken = '';
+  adminInfo = null;
+}
+
+function showDashboard() {
+  document.getElementById('loginScreen').style.display = 'none';
+  document.getElementById('dashboard').style.display = 'block';
+  document.getElementById('adminName').textContent = adminInfo?.username || '--';
+  document.getElementById('adminRole').textContent = adminInfo?.role || '--';
+  loadUsers();
+  loadStats();
+}
+
+async function doLogin() {
+  const username = document.getElementById('loginUsername').value.trim();
+  const password = document.getElementById('loginPassword').value.trim();
+  const errEl = document.getElementById('loginError');
+  errEl.textContent = '';
+
+  if (!username || !password) {
+    errEl.textContent = '请输入用户名和密码';
+    return;
+  }
+
+  const btn = document.getElementById('btnLogin');
+  btn.textContent = '登录中...';
+  btn.disabled = true;
+
+  try {
+    const formData = new URLSearchParams();
+    formData.append('username', username);
+    formData.append('password', password);
+
+    const res = await fetch(API_BASE + '/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: formData
+    });
+
+    const data = await res.json();
+    if (res.ok && data.code === 200) {
+      accessToken = data.data.access_token;
+      adminInfo = { username: data.data.username, role: data.data.role };
+      showDashboard();
+      showToast('登录成功', 'success');
+    } else {
+      errEl.textContent = data.detail || data.message || '登录失败';
+    }
+  } catch (e) {
+    errEl.textContent = '网络错误: ' + e.message;
+  } finally {
+    btn.textContent = '登 录';
+    btn.disabled = false;
+  }
+}
+
+async function doLogout() {
+  try {
+    await apiFetch(API_BASE + '/logout', { method: 'POST' });
+  } catch(e) { /* ignore */ }
+  showToast('已退出登录', 'info');
+  showLogin();
+}
+
+// ==================== User Management ====================
+async function loadUsers() {
+  const tbody = document.getElementById('userTableBody');
+  tbody.innerHTML = '<tr><td colspan="9" class="empty-state"><div class="spinner" style="margin:0 auto"></div><p style="margin-top:12px">加载中...</p></td></tr>';
+
+  try {
+    const params = new URLSearchParams({ page: currentPage, size: 20 });
+    if (currentKeyword) params.append('keyword', currentKeyword);
+
+    const res = await apiFetch(API_BASE + '/users?' + params.toString());
+    const data = await res.json();
+
+    if (data.code !== 200) {
+      tbody.innerHTML = '<tr><td colspan="9" class="empty-state"><p>加载失败: ' + (data.message || '未知错误') + '</p></td></tr>';
+      return;
+    }
+
+    const { items, total, page, size } = data.data;
+    renderTable(items);
+    renderPagination(total, page, size);
+  } catch (e) {
+    tbody.innerHTML = '<tr><td colspan="9" class="empty-state"><p>加载失败: ' + e.message + '</p></td></tr>';
+  }
+}
+
+function renderTable(items) {
+  const tbody = document.getElementById('userTableBody');
+  if (!items || items.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="9" class="empty-state"><div class="empty-icon">—</div><p>暂无用户数据</p></td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = items.map(u => {
+    const isUnlimited = u.free_count === -1;
+    const freeCountClass = isUnlimited ? 'free-count unlimited' : 'free-count';
+    const freeCountText = isUnlimited ? '∞ 无限' : (u.free_count ?? 0);
+    const statusBadge = u.is_active
+      ? '<span class="badge badge-active">正常</span>'
+      : '<span class="badge badge-inactive">禁用</span>';
+    const unlimitedBadge = isUnlimited ? ' <span class="badge badge-unlimited">无限</span>' : '';
+
+    const unlimitedBtn = isUnlimited
+      ? `<button class="btn-action unlimited-set" onclick="toggleUnlimited(${u.id}, '${escapeHtml(u.nickname || '')}', true)" title="取消无限">取消无限</button>`
+      : `<button class="btn-action" onclick="toggleUnlimited(${u.id}, '${escapeHtml(u.nickname || '')}', false)" title="设为无限">设为无限</button>`;
+
+    const toggleBtn = u.is_active
+      ? `<button class="btn-action danger" onclick="toggleUser(${u.id})">禁用</button>`
+      : `<button class="btn-action" onclick="toggleUser(${u.id})">启用</button>`;
+
+    return `
+      <tr>
+        <td><span class="user-id">#${u.id}</span></td>
+        <td><span class="user-nickname">${escapeHtml(u.nickname || '--')}</span></td>
+        <td><span style="font-size:12px;color:var(--text-muted)">${escapeHtml(u.platform || '--')}</span></td>
+        <td><span class="${freeCountClass}">${freeCountText}${unlimitedBadge}</span></td>
+        <td><span style="font-family:var(--font-mono);font-size:13px">${u.free_count_total ?? 0}</span></td>
+        <td><span style="font-family:var(--font-mono);font-size:13px">¥${(u.balance ?? 0).toFixed(2)}</span></td>
+        <td>${statusBadge}</td>
+        <td><span style="font-size:12px;color:var(--text-muted)">${formatDate(u.last_login_at)}</span></td>
+        <td>
+          <div class="actions">
+            <button class="btn-action" onclick="openAdjustModal(${u.id}, '${escapeHtml(u.nickname || '')}', ${u.free_count ?? 0})">调整次数</button>
+            ${unlimitedBtn}
+            ${toggleBtn}
+          </div>
+        </td>
+      </tr>`;
+  }).join('');
+}
+
+function renderPagination(total, page, size) {
+  const totalPages = Math.ceil(total / size);
+  const container = document.getElementById('pagination');
+
+  container.querySelector('.page-info').textContent =
+    `共 ${total} 条 · 第 ${page}/${totalPages} 页`;
+
+  const btnsContainer = container.querySelector('.page-btns');
+  let btns = '';
+
+  btns += `<button onclick="goPage(${page - 1})" ${page <= 1 ? 'disabled' : ''}>← 上一页</button>`;
+
+  const start = Math.max(1, page - 2);
+  const end = Math.min(totalPages, page + 2);
+  for (let i = start; i <= end; i++) {
+    btns += `<button onclick="goPage(${i})" class="${i === page ? 'active' : ''}">${i}</button>`;
+  }
+
+  btns += `<button onclick="goPage(${page + 1})" ${page >= totalPages ? 'disabled' : ''}>下一页 →</button>`;
+  btnsContainer.innerHTML = btns;
+}
+
+function goPage(p) {
+  currentPage = p;
+  loadUsers();
+}
+
+function searchUsers() {
+  currentKeyword = document.getElementById('searchKeyword').value.trim();
+  currentPage = 1;
+  loadUsers();
+}
+
+function escapeHtml(str) {
+  if (!str) return '';
+  return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;');
+}
+
+// ==================== Adjust Free Count ====================
+function openAdjustModal(userId, userName, currentCount) {
+  currentAdjustUserId = userId;
+  currentAdjustUserName = userName;
+  currentAdjustCount = currentCount;
+  document.getElementById('modalUserName').textContent = userName;
+  document.getElementById('modalCurrentCount').textContent = currentCount === -1 ? '∞ 无限' : currentCount;
+  document.getElementById('adjustDelta').value = 10;
+  document.getElementById('adjustReason').value = '管理员手动调整';
+  document.getElementById('adjustModal').classList.add('active');
+}
+
+function closeAdjustModal() {
+  document.getElementById('adjustModal').classList.remove('active');
+  currentAdjustUserId = null;
+}
+
+async function confirmAdjust() {
+  const delta = parseInt(document.getElementById('adjustDelta').value) || 0;
+  const reason = document.getElementById('adjustReason').value.trim() || '管理员手动调整';
+
+  if (delta === 0) {
+    showToast('调整量不能为 0', 'error');
+    return;
+  }
+
+  try {
+    const formData = new URLSearchParams();
+    formData.append('delta', delta);
+    formData.append('reason', reason);
+
+    const res = await apiFetch(API_BASE + '/users/' + currentAdjustUserId + '/free-count', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: formData
+    });
+
+    const data = await res.json();
+    if (data.code === 200) {
+      showToast(data.message || '调整成功', 'success');
+      closeAdjustModal();
+      loadUsers();
+      loadStats();
+    } else {
+      showToast(data.detail || data.message || '调整失败', 'error');
+    }
+  } catch (e) {
+    showToast('操作失败: ' + e.message, 'error');
+  }
+}
+
+// ==================== Toggle Unlimited ====================
+async function toggleUnlimited(userId, userName, currentlyUnlimited) {
+  const action = currentlyUnlimited ? '取消无限次数' : '设为无限次数';
+  if (!confirm(`确认对用户 "${userName}" ${action}？`)) return;
+
+  try {
+    const res = await apiFetch(API_BASE + '/users/' + userId + '/set-unlimited', {
+      method: 'POST'
+    });
+
+    const data = await res.json();
+    if (data.code === 200) {
+      showToast(data.message || '操作成功', 'success');
+      loadUsers();
+      loadStats();
+    } else {
+      showToast(data.detail || data.message || '操作失败', 'error');
+    }
+  } catch (e) {
+    showToast('操作失败: ' + e.message, 'error');
+  }
+}
+
+// ==================== Toggle User Active ====================
+async function toggleUser(userId) {
+  if (!confirm('确认切换该用户状态？')) return;
+
+  try {
+    const res = await apiFetch(API_BASE + '/users/' + userId + '/toggle', {
+      method: 'PATCH'
+    });
+
+    const data = await res.json();
+    if (data.code === 200) {
+      showToast(data.message || '状态已切换', 'success');
+      loadUsers();
+      loadStats();
+    } else {
+      showToast(data.detail || data.message || '操作失败', 'error');
+    }
+  } catch (e) {
+    showToast('操作失败: ' + e.message, 'error');
+  }
+}
+
+// ==================== Stats ====================
+async function loadStats() {
+  try {
+    // Load users to compute stats
+    const res = await apiFetch(API_BASE + '/users?page=1&size=1');
+    const data = await res.json();
+    if (data.code === 200) {
+      document.getElementById('statTotal').textContent = data.data.total || 0;
+    }
+
+    // Try to get dashboard stats
+    try {
+      const dashRes = await apiFetch('/api/v1/admin/dashboard/stats');
+      const dashData = await dashRes.json();
+      if (dashData.code === 200) {
+        document.getElementById('statActive').textContent = dashData.data.active_users ?? '--';
+        document.getElementById('statUnlimited').textContent = dashData.data.unlimited_users ?? '--';
+        document.getElementById('statProcessed').textContent = dashData.data.total_processes ?? '--';
+      }
+    } catch(e) {
+      // Dashboard stats might not be available, compute from user list
+      const fullRes = await apiFetch(API_BASE + '/users?page=1&size=500');
+      const fullData = await fullRes.json();
+      if (fullData.code === 200) {
+        const items = fullData.data.items || [];
+        const active = items.filter(u => u.is_active).length;
+        const unlimited = items.filter(u => u.free_count === -1).length;
+        document.getElementById('statActive').textContent = active;
+        document.getElementById('statUnlimited').textContent = unlimited;
+        document.getElementById('statProcessed').textContent = '--';
+      }
+    }
+  } catch(e) {
+    // Silently fail for stats
+  }
+}
+
+// ==================== Init ====================
+// Check if token exists in sessionStorage
+(function() {
+  const savedToken = sessionStorage.getItem('admin_token');
+  const savedInfo = sessionStorage.getItem('admin_info');
+  if (savedToken && savedInfo) {
+    try {
+      accessToken = savedToken;
+      adminInfo = JSON.parse(savedInfo);
+      showDashboard();
+    } catch(e) {
+      showLogin();
+    }
+  }
+
+  // Save credentials on successful login (override original doLogin behavior)
+  const origLogin = doLogin;
+  window.doLogin = async function() {
+    await origLogin();
+    if (accessToken) {
+      sessionStorage.setItem('admin_token', accessToken);
+      sessionStorage.setItem('admin_info', JSON.stringify(adminInfo));
+    }
+  };
+
+  // Clear on logout
+  const origLogout = doLogout;
+  window.doLogout = async function() {
+    sessionStorage.removeItem('admin_token');
+    sessionStorage.removeItem('admin_info');
+    await origLogout();
+  };
+
+  // Enter key to login
+  document.getElementById('loginPassword').addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') doLogin();
+  });
+})();
+</script>
+
+</body>
+</html>

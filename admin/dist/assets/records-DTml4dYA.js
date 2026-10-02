@@ -1,0 +1,1 @@
+import{K as e}from"./index-BGKji6O4.js";function t(r){return e("/records",r)}function s(r){return e(`/records/${r}`)}function n(r){return e("/records/export",r,{responseType:"blob"})}export{s as a,n as e,t as g};

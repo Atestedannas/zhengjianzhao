@@ -1,0 +1,46 @@
+templates:
+  - name: "教师招聘2寸"
+    width_px: 413
+    height_px: 579
+    dpi: 350
+    min_kb: 0
+    max_kb: 100
+    allowed_bg_colors: ["blue", "white"]
+    output_format: "JPEG"
+    physical_size_mm: "35×45mm"
+    remark: "适用教师考编报名"
+    is_active: true
+
+  - name: "征兵照片"
+    width_px: 358
+    height_px: 441
+    dpi: 350
+    min_kb: 20
+    max_kb: 100
+    allowed_bg_colors: ["red", "white", "blue"]
+    output_format: "JPEG"
+    remark: "全国征兵网标准"
+    is_active: true
+
+  - name: "公务员1寸"
+    width_px: 295
+    height_px: 413
+    dpi: 350
+    min_kb: 20
+    max_kb: 45
+    allowed_bg_colors: ["white", "blue"]
+    output_format: "JPEG"
+    physical_size_mm: "25×35mm"
+    remark: "公务员/事业编报考"
+    is_active: true
+
+  - name: "通用扫描件"
+    width_px: 0
+    height_px: 0
+    dpi: 300
+    min_kb: 0
+    max_kb: 2048
+    allowed_bg_colors: ["keep"]
+    output_format: "JPEG"
+    remark: "不调整像素仅压缩至≤2MB"
+    is_active: true

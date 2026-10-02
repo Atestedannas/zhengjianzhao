@@ -1,0 +1,34 @@
+{
+  "timestamp": "2026-08-19T20:29:22.776032",
+  "server": "http://119.91.157.252:8081",
+  "results": [
+    {
+      "test": "换背景(无美颜)",
+      "status": "FAIL",
+      "details": {
+        "error": "无可用免费次数，请先支付"
+      }
+    },
+    {
+      "test": "单独美颜",
+      "status": "FAIL",
+      "details": {
+        "error": "无可用免费次数，请先支付"
+      }
+    },
+    {
+      "test": "换背景+美颜组合",
+      "status": "FAIL",
+      "details": {
+        "error": "无可用免费次数，请先支付"
+      }
+    }
+  ],
+  "summary": {
+    "total": 3,
+    "pass": 0,
+    "fail": 3,
+    "warn": 0,
+    "error": 0
+  }
+}

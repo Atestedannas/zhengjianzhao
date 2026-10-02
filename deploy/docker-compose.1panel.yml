@@ -1,0 +1,110 @@
+# ============================================================
+# 照片合规处理系统 — 1Panel 专用 Docker Compose
+# 复用现有 MySQL / Redis / OpenResty，只部署后端
+# 使用绝对路径（1Panel 会将 compose 文件复制到内部目录执行）
+# 项目路径: /opt/zhengjianzhao/photo-zhijianzhao
+# 部署方式: 在 1Panel → 容器 → 编排 中粘贴此文件
+# ============================================================
+
+services:
+  # ======================== FastAPI 后端 ========================
+  backend:
+    build:
+      context: /opt/zhengjianzhao/photo-zhijianzhao/backend
+      dockerfile: Dockerfile
+    container_name: photo-backend
+    restart: unless-stopped
+    command: gunicorn app.main:app -w 4 -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8000 --timeout 300 --graceful-timeout 30 --keep-alive 5 --access-logfile - --error-logfile -
+    env_file:
+      - /opt/zhengjianzhao/photo-zhijianzhao/backend/.env
+    volumes:
+      - photo_temp:/data/temp
+      - photo_uploads:/data/uploads
+      - photo_models:/root/.u2net
+    ports:
+      - "8800:8000"
+    healthcheck:
+      # 后端真实路由是 /health（不在 /api/v1 下）
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - 1panel-network
+      - photo-net
+
+  # ======================== Celery Worker（异步任务） ========================
+  celery-worker:
+    build:
+      context: /opt/zhengjianzhao/photo-zhijianzhao/backend
+      dockerfile: Dockerfile
+    container_name: photo-celery-worker
+    restart: unless-stopped
+    command: celery -A app.tasks.celery_app worker -l info -c 2 --max-tasks-per-child 100
+    env_file:
+      - /opt/zhengjianzhao/photo-zhijianzhao/backend/.env
+    volumes:
+      - photo_temp:/data/temp
+      - photo_uploads:/data/uploads
+    networks:
+      - 1panel-network
+      - photo-net
+
+  # ======================== Celery Beat（定时任务） ========================
+  celery-beat:
+    build:
+      context: /opt/zhengjianzhao/photo-zhijianzhao/backend
+      dockerfile: Dockerfile
+    container_name: photo-celery-beat
+    restart: unless-stopped
+    command: celery -A app.tasks.celery_app beat -l info
+    env_file:
+      - /opt/zhengjianzhao/photo-zhijianzhao/backend/.env
+    volumes:
+      - photo_temp:/data/temp
+      - photo_uploads:/data/uploads
+    networks:
+      - 1panel-network
+      - photo-net
+
+  # ======================== Nginx（前端静态 + API 反向代理） ========================
+  nginx:
+    image: nginx:1.25-alpine
+    container_name: photo-nginx
+    restart: unless-stopped
+    ports:
+      - "8081:80"
+    volumes:
+      - /opt/zhengjianzhao/photo-zhijianzhao/deploy/nginx-1panel.conf:/etc/nginx/conf.d/default.conf:ro
+      # 移动端 H5 用户端（uni-app 构建，base=/m/）→ /m/
+      - /opt/zhengjianzhao/photo-zhijianzhao/frontend/dist/build/h5:/usr/share/nginx/m:ro
+      # 旧版单文件桌面页 → /web/（保留备份入口）
+      - /opt/zhengjianzhao/photo-zhijianzhao/frontend/web:/usr/share/nginx/web:ro
+      # PC 专版（Vue3 构建，base=/web-pc/）→ /web-pc/（独立链接）
+      - /opt/zhengjianzhao/photo-zhijianzhao/web-pc/dist:/usr/share/nginx/web-pc:ro
+      # 管理后台 → /admin/
+      - /opt/zhengjianzhao/photo-zhijianzhao/admin/dist:/usr/share/nginx/admin:ro
+    depends_on:
+      - backend
+    networks:
+      - photo-net
+
+# ======================== 数据卷 ========================
+volumes:
+  photo_temp:
+    driver: local
+  photo_uploads:
+    driver: local
+  photo_models:
+    driver: local
+
+# ======================== 网络 ========================
+networks:
+  # 加入 1Panel 现有网络，使容器可访问 Mysql/Redis
+  1panel-network:
+    external: true
+    name: 1panel-network
+  # 后端内部网络（backend ↔ celery ↔ nginx）
+  photo-net:
+    driver: bridge

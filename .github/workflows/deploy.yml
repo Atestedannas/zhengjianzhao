@@ -1,0 +1,82 @@
+name: Deploy to production
+
+# push 到 main 就自动部署；也可以在 Actions 页面点 “Run workflow” 手动触发
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+  workflow_dispatch:
+
+# 同一个时间只跑一次部署，避免连续两次 push 同时重建
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: 同步代码 → 重建后端 → 重启容器
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 配置 SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          PORT="${SSH_PORT:-22}"
+          ssh-keyscan -p "$PORT" -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+          ssh -i ~/.ssh/id_deploy -p "$PORT" -o StrictHostKeyChecking=accept-new \
+            "$SSH_USER@$SSH_HOST" 'echo "SSH 连通，服务器主机名：$(hostname)"'
+
+      - name: 同步文件到服务器
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+        run: |
+          set -euo pipefail
+          PORT="${SSH_PORT:-22}"
+          # 用仓库里的排除清单保护服务器上的 .env 和大模型文件；不使用 --delete，
+          # 所以服务器上已有的文件永远不会被删掉。
+          rsync -rlptzv --no-owner --no-group \
+            --exclude-from=deploy/rsync-exclude.txt \
+            -e "ssh -i ~/.ssh/id_deploy -p $PORT -o StrictHostKeyChecking=accept-new" \
+            ./ "$SSH_USER@$SSH_HOST:/opt/zhengjianzhao/photo-zhijianzhao/"
+
+      - name: 服务器上重建并重启
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+        run: |
+          set -euo pipefail
+          PORT="${SSH_PORT:-22}"
+          ssh -i ~/.ssh/id_deploy -p "$PORT" -o StrictHostKeyChecking=accept-new \
+            "$SSH_USER@$SSH_HOST" \
+            'bash /opt/zhengjianzhao/photo-zhijianzhao/deploy/deploy.sh'
+
+      - name: 结果摘要
+        if: always()
+        run: |
+          {
+            echo "### 部署${{ job.status == 'success' && '成功' || '失败' }}"
+            echo ""
+            echo "| 项目 | 值 |"
+            echo "| --- | --- |"
+            echo "| 提交 | \`${{ github.sha }}\` |"
+            echo "| 分支 | \`${{ github.ref_name }}\` |"
+            echo "| 触发 | ${{ github.event_name }} |"
+            echo "| 时间 | $(date -u '+%Y-%m-%d %H:%M:%S') UTC |"
+          } >> "$GITHUB_STEP_SUMMARY"

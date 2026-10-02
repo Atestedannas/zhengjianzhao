@@ -1,0 +1,23 @@
+# 统一换行符：仓库里一律 LF（服务器是 Linux，避免 \r 导致脚本报错）
+* text=auto
+
+*.sh    text eol=lf
+*.bash  text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.conf  text eol=lf
+Dockerfile text eol=lf
+
+# 二进制文件不做任何转换
+*.onnx  binary
+*.task  binary
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.webp  binary
+*.woff  binary
+*.woff2 binary
+*.ttf   binary
+*.zip   binary

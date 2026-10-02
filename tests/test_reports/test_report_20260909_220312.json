@@ -1,0 +1,85 @@
+{
+  "timestamp": "2026-09-09T22:03:12.073178",
+  "server": "http://119.91.157.252:8081",
+  "results": [
+    {
+      "test": "换背景(无美颜)",
+      "status": "FAIL",
+      "details": {
+        "avg_edge_rgb": [
+          221.3,
+          217.6,
+          217.0
+        ],
+        "avg_corner_rgb": [
+          177.6,
+          177.2,
+          181.2
+        ],
+        "is_white_bg": true,
+        "is_clean_corners": false,
+        "verdict": "FAIL"
+      }
+    },
+    {
+      "test": "单独美颜",
+      "status": "FAIL",
+      "details": {
+        "sharpness": {
+          "laplacian_variance": 301.14,
+          "is_blurry": false,
+          "is_sharp": false,
+          "verdict": "WARN"
+        },
+        "naturalness": {
+          "mean_pixel_diff": 65.54,
+          "max_pixel_diff": 255.0,
+          "is_over_processed": true,
+          "is_no_effect": false,
+          "verdict": "FAIL"
+        }
+      }
+    },
+    {
+      "test": "换背景+美颜组合",
+      "status": "FAIL",
+      "details": {
+        "background": {
+          "avg_edge_rgb": [
+            225.1,
+            221.4,
+            220.9
+          ],
+          "avg_corner_rgb": [
+            194.6,
+            194.1,
+            198.4
+          ],
+          "is_white_bg": true,
+          "is_clean_corners": false,
+          "verdict": "FAIL"
+        },
+        "sharpness": {
+          "laplacian_variance": 301.14,
+          "is_blurry": false,
+          "is_sharp": false,
+          "verdict": "WARN"
+        },
+        "naturalness": {
+          "mean_pixel_diff": 65.54,
+          "max_pixel_diff": 255.0,
+          "is_over_processed": true,
+          "is_no_effect": false,
+          "verdict": "FAIL"
+        }
+      }
+    }
+  ],
+  "summary": {
+    "total": 3,
+    "pass": 0,
+    "fail": 3,
+    "warn": 0,
+    "error": 0
+  }
+}

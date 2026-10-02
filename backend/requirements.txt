@@ -1,0 +1,33 @@
+fastapi==0.115.0
+uvicorn[standard]==0.30.0
+gunicorn>=22.0.0
+sqlalchemy[asyncio]==2.0.35
+# 本项目**只用 MySQL**（生产 1Panel MySQL / 开发 docker-compose 里的 MySQL）。
+# 不引入 aiosqlite：SQLite 无法支撑并发写入与 ON DUPLICATE KEY UPDATE，
+# 误配到 SQLite 时由 app/config.py 的启动自检直接给出明确报错。
+asyncmy==0.2.10
+alembic==1.13.0
+pydantic-settings==2.5.0
+# IANA 时区数据库：每日免费次数按 DAILY_BONUS_TIMEZONE（默认 Asia/Shanghai）划分「一天」。
+# python:3.10-slim 镜像里没有 tzdata，缺了会回退固定 UTC+8（见 core/pricing_config.py）
+tzdata>=2024.1
+redis==5.2.0
+python-jose[cryptography]==3.3.0
+# 直接用 bcrypt 做密码哈希（见 app/core/security.py）。
+# 【不要】再引入 passlib：passlib 1.7.4 已停止维护，且其 bcrypt 后端
+# 初始化时的 detect_wrap_bug() 会用 >72 字节密码做探测，
+# 在 bcrypt 4.x 下抛 ValueError 导致应用启动即崩溃。
+bcrypt>=4.0.1,<5.0
+Pillow==10.4.0
+rembg==2.0.57
+opencv-python-headless>=4.10.0.84
+mediapipe>=1.0.1
+onnxruntime>=1.19.0
+celery[redis]==5.4.0
+httpx==0.27.0
+slowapi==0.1.9
+loguru==0.7.2
+aiofiles==24.1.0
+python-multipart==0.0.9
+openpyxl==3.1.5
+alipay-sdk-python==3.6.0

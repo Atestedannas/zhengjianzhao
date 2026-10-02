@@ -1,0 +1,32 @@
+# rsync 排除清单（GitHub Actions 同步代码到服务器时使用）
+#
+# 说明：Actions 检出的是 Git 仓库内容，本来就不含 .env 和大模型文件；
+# 这里再排除一次是双保险 —— 万一有人改成从本地机器 rsync，也不会覆盖服务器上的密钥和模型。
+
+.git/
+.github/
+.gitignore
+.gitattributes
+
+# 密钥 / 线上配置（必须保留服务器上那一份）
+.env
+.env.*
+*.pem
+*.key
+
+# 大模型文件（服务器上已有，且体积远超 GitHub 限制）
+*.onnx
+*.task
+*.pth
+
+# 依赖与缓存
+node_modules/
+**/__pycache__/
+**/*.pyc
+**/.pytest_cache/
+
+# 运行时产物与本地备份
+backend/temp/
+backend/logs/
+*.log
+frontend/dist/build/h5_backup_before_daily_bonus/
