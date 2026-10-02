@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     DEBUG: bool = False
     API_V1_PREFIX: str = "/api/v1"
 
+
     # 数据库
     DB_HOST: str = "127.0.0.1"
     DB_PORT: int = 3306
