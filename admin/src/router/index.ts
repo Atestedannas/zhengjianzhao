@@ -15,6 +15,7 @@ const constantRoutes: RouteRecordRaw[] = [
   },
 ]
 
+
 export const asyncRoutes: RouteRecordRaw[] = [
   {
     path: '/dashboard',
