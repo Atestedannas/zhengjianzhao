@@ -19,8 +19,13 @@ python-jose[cryptography]==3.3.0
 # 在 bcrypt 4.x 下抛 ValueError 导致应用启动即崩溃。
 bcrypt>=4.0.1,<5.0
 Pillow==10.4.0
+# HEIC/HEIF 支持（不装的话 validator 会告警「pillow_heif not installed, HEIC support limited」）
+pillow-heif>=0.18.0
 rembg==2.0.57
-opencv-python-headless>=4.10.0.84
+# 【必须锁 4.x】opencv 5.0 起不再随包分发 cv2/data/haarcascade_*.xml，
+# 而 crop.py / beautify.py / face_detect.py 都靠 cv2.data.haarcascades 加载人脸检测器，
+# 装成 5.x 会导致人脸检测全部失败（只能居中裁剪、对齐失效）。
+opencv-python-headless==4.10.0.84
 mediapipe>=1.0.1
 onnxruntime>=1.19.0
 celery[redis]==5.4.0

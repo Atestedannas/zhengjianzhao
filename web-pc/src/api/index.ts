@@ -365,6 +365,42 @@ export interface ProcessParams {
   gender?: string
 }
 
+/** 处理记录状态：pending/processing 需继续轮询，success/failed 为终态 */
+export type ProcessStatusValue = 'pending' | 'processing' | 'success' | 'failed'
+
+/** 处理结果字段：同步返回成功与状态接口 success 时同名同义 */
+export interface ProcessResultFields {
+  result_url?: string
+  download_url?: string
+  file_size_kb?: number
+  pixels?: string
+  dpi?: number
+  output_format?: string
+  mime_type?: string
+  warnings?: string[]
+  faces_detected?: number
+  processing_time_ms?: number
+  remaining_free_count?: number
+  unlimited?: boolean
+}
+
+/** POST /process/ 的返回：异步改造后只保证 record_id，status 为 success 时才直接带结果 */
+export interface ProcessSubmitResult extends ProcessResultFields {
+  record_id: number
+  status?: ProcessStatusValue
+  status_url?: string
+  free_used?: boolean
+}
+
+/** GET /process/{record_id}/status 的返回 */
+export interface ProcessStatusData extends ProcessResultFields {
+  record_id: number
+  status: ProcessStatusValue
+  /** status=failed 时的失败原因文案 */
+  error: string | null
+}
+
+/** 处理结果（success 后落到 store 的形态，字段保持必填） */
 export interface ProcessResult {
   record_id: number
   result_url: string
@@ -381,7 +417,7 @@ export interface ProcessResult {
   remaining_free_count: number
 }
 
-export function processPhoto(file: File, params: ProcessParams): Promise<ProcessResult> {
+export function processPhoto(file: File, params: ProcessParams): Promise<ProcessSubmitResult> {
   const formData = new FormData()
   formData.append('file', file)
   if (params.template_id) formData.append('template_id', String(params.template_id))
@@ -404,6 +440,11 @@ export function processPhoto(file: File, params: ProcessParams): Promise<Process
   return post('/process/', formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
   })
+}
+
+/** 查询处理记录状态（异步处理的轮询接口，走同一 axios 实例自动带 Authorization） */
+export function getProcessStatus(recordId: number): Promise<ProcessStatusData> {
+  return get(`/process/${recordId}/status`)
 }
 
 export interface SizePreset {

@@ -110,7 +110,7 @@
             type="primary"
             size="large"
             :loading="photoStore.processing"
-            :disabled="!authStore.isLogin"
+            :disabled="!authStore.isLogin || photoStore.processing"
             @click="handleProcess"
           >
             <el-icon><MagicStick /></el-icon>
@@ -352,7 +352,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, onUnmounted, computed } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import {
@@ -370,7 +370,7 @@ import {
   Setting,
   Loading,
 } from '@element-plus/icons-vue'
-import { usePhotoStore } from '@/stores/photo'
+import { usePhotoStore, ProcessPollError } from '@/stores/photo'
 import { useAuthStore } from '@/stores/auth'
 import { getDownloadUrl, getProtectedFile } from '@/api'
 import AuthImage from '@/components/AuthImage.vue'
@@ -437,6 +437,11 @@ onMounted(async () => {
   }
 
   applyEntryFromQuery()
+})
+
+// 离开页面时停止轮询，避免定时器泄漏和后台重复请求
+onUnmounted(() => {
+  photoStore.cancelPolling()
 })
 
 /**
@@ -523,6 +528,8 @@ function reUpload() {
 }
 
 async function handleProcess() {
+  // 防止重复提交：后端按次扣费，轮询期间不允许再次提交
+  if (photoStore.processing) return
   if (!authStore.isLogin) {
     ElMessage.warning('请先登录')
     return
@@ -545,6 +552,17 @@ async function handleProcess() {
       ElMessage.success('处理成功！')
     }
   } catch (err: any) {
+    // 处理失败 / 轮询超时的文案由 store 抛出，直接展示
+    if (err instanceof ProcessPollError) {
+      if (err.timeout) {
+        ElMessage.warning(err.message)
+      } else {
+        ElMessage.error(err.message)
+      }
+      return
+    }
+    // 轮询被取消（卸载 / 重新提交 / 主动取消）静默处理
+    if (err?.name === 'ProcessCancelledError') return
     if (err.needPay) {
       ElMessage.warning('免费次数已用完，请联系管理员充值')
     }

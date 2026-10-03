@@ -14,11 +14,15 @@
 
 import io
 import os
+from dataclasses import dataclass
 from functools import lru_cache
+from typing import Optional
 
 import numpy as np
 from PIL import Image
 from loguru import logger
+
+from app.config import settings
 
 # 标准证件照背景色映射（扩展版）
 BG_COLOR_MAP = {
@@ -41,26 +45,106 @@ BG_COLOR_MAP = {
 
 # BiRefNet 模型文件名（backend/models/ 目录）
 BIRefNET_MODEL_FILE = "BiRefNet-general-bb_swin_v1_tiny-epoch_232.onnx"
+# 轻量兜底模型：输入 320x320，单次推理峰值只有几百 MB
+LITE_MODEL_FILE = "u2net_human_seg.onnx"
 
-# 推理输入分辨率（模型固定 1024x1024）
-_INPUT_SIZE = 1024
+# 每个引擎的「模型文件 → 推理输入边长」。
+# 注意：两个模型的输入形状都是导出时写死的（BiRefNet 1024 / u2net 320），
+# 不能靠改代码降分辨率，所以内存不够时唯一的办法是换轻量模型。
+_ENGINE_MODELS = {
+    "birefnet": (BIRefNET_MODEL_FILE, 1024),
+    "u2net": (LITE_MODEL_FILE, 320),
+}
 
-# ImageNet 归一化参数
+# ImageNet 归一化参数（BiRefNet 与 u2net_human_seg 用的是同一套）
 _MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32).reshape(1, 3, 1, 1)
 _STD = np.array([0.229, 0.224, 0.225], dtype=np.float32).reshape(1, 3, 1, 1)
 
 
+@dataclass
+class _ModelSession:
+    """一个已加载的 onnxruntime session 及其输入/输出元信息.
+
+    不能像以前那样把 input_name/output_name 挂到 _get_session 函数对象上 ——
+    现在缓存里同时会有两个模型，挂函数属性会互相覆盖。
+    """
+    path: str
+    engine: str
+    size: int
+    sess: object
+    input_name: str
+    output_name: str
+
+
+def _intra_op_threads() -> int:
+    """算子内并行线程数：限制线程数可以同时压低峰值内存与 CPU 争抢."""
+    configured = int(getattr(settings, "ORT_INTRA_OP_THREADS", 0) or 0)
+    if configured > 0:
+        return configured
+    return max(1, min(4, os.cpu_count() or 2))
+
+
+def available_memory_mb() -> Optional[int]:
+    """读取宿主机可用内存（MB）；非 Linux 或读不到时返回 None.
+
+    容器没有设 memory limit 时 /proc/meminfo 反映的就是宿主机内存，
+    这正是内核 OOM killer 判断的依据。
+    """
+    try:
+        with open("/proc/meminfo", "r", encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) // 1024
+    except (OSError, ValueError, IndexError):
+        return None
+    return None
+
+
+def resolve_engine(available_mb: Optional[int] = None) -> str:
+    """决定本次抠图用哪个引擎.
+
+    auto 模式下可用内存低于阈值就用轻量模型 —— 宁可质量略降，
+    也不能让一个 3GB+ 的推理把整台小机器拖进 OOM。
+
+    available_mb 仅用于测试注入；不传时读宿主机 /proc/meminfo。
+    读不到（非 Linux）时按 BiRefNet 处理，保持改造前的行为。
+    """
+    mode = (getattr(settings, "BG_ENGINE", "auto") or "auto").strip().lower()
+    if mode in ("birefnet", "u2net", "off"):
+        return mode
+    if mode != "auto":
+        logger.warning(f"BG_ENGINE='{mode}' 不是合法值，按 auto 处理")
+
+    threshold = int(getattr(settings, "BIREFNET_MIN_AVAILABLE_MB", 3600) or 3600)
+    avail = available_memory_mb() if available_mb is None else available_mb
+    if avail is None or avail >= threshold:
+        return "birefnet"
+
+    logger.warning(
+        f"可用内存 {avail}MB < 阈值 {threshold}MB，抠图自动降级为轻量模型 "
+        f"{LITE_MODEL_FILE}（320x320）以避免 OOM；升配内存后会恢复 BiRefNet"
+    )
+    return "u2net"
+
+
 def _model_candidates(model_name: str) -> list:
-    """返回模型候选搜索路径（项目 models 目录 / rembg 下载目录 / 工作目录）."""
+    """返回模型候选搜索路径（项目 models 目录 / 容器内 /app/models / rembg 下载目录）.
+
+    统一按「去掉扩展名再补 .onnx」处理：调用方传带不带 .onnx 都能命中，
+    否则会出现 ~/.u2net/u2net_human_seg.onnx.onnx 这种找不到的路径。
+    """
+    stem = model_name[:-5] if model_name.endswith(".onnx") else model_name
     backend_models = os.path.join(
         os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
         "models",
     )
     return [
-        os.path.join(backend_models, model_name),
-        os.path.expanduser(f"~/.u2net/{model_name}.onnx"),
-        os.path.join(os.getcwd(), f"{model_name}.onnx"),
-        os.path.join("/root/.u2net", f"{model_name}.onnx"),
+        os.path.join(backend_models, f"{stem}.onnx"),          # backend/models/（本地开发）
+        os.path.join("/app/models", f"{stem}.onnx"),           # 容器内模型目录
+        os.path.expanduser(f"~/.u2net/{stem}.onnx"),           # Dockerfile COPY 的位置
+        os.path.join("/root/.u2net", f"{stem}.onnx"),
+        os.path.join(os.getcwd(), f"{stem}.onnx"),
+        os.path.join(os.getcwd(), "models", f"{stem}.onnx"),
     ]
 
 
@@ -69,54 +153,77 @@ def _resolve_model_path(model_name: str):
     return next((p for p in _model_candidates(model_name) if os.path.exists(p)), None)
 
 
-@lru_cache(maxsize=2)
-def _get_session(model_path: str):
-    """模块级单例缓存 onnxruntime session（onnxruntime session 可并发复用）."""
+@lru_cache(maxsize=4)
+def _get_session(model_path: str, engine: str, size: int) -> _ModelSession:
+    """模块级缓存 onnxruntime session（session 可并发复用）."""
     import onnxruntime as ort
-    logger.info(f"Loading BiRefNet model session from: {model_path}")
+
+    logger.info(f"Loading {engine} model session from: {model_path} (input {size}x{size})")
     # 动态选择可用 provider（CPU 兜底，有 GPU 自动加速）
     available = set(ort.get_available_providers())
     providers = [p for p in ("CUDAExecutionProvider", "TensorrtExecutionProvider", "CPUExecutionProvider")
                  if p in available]
     if not providers:
         providers = ["CPUExecutionProvider"]
-    sess = ort.InferenceSession(model_path, providers=providers)
-    # 记录输入/输出名称（不同导出版本命名可能不同，动态获取）
-    _get_session.input_name = sess.get_inputs()[0].name
-    _get_session.output_name = sess.get_outputs()[0].name
-    _get_session.sess = sess
-    return sess
+
+    opts = ort.SessionOptions()
+    # 【内存治理关键项】关掉 CPU memory arena：
+    # 默认开启时推理过程中分配过的峰值内存会被 arena 长期缓存、不还给操作系统，
+    # 在 4GB 以下的小机器上会把进程直接撑到被内核 OOM 杀掉（gunicorn SIGKILL → nginx 502）。
+    opts.enable_cpu_mem_arena = False
+    opts.enable_mem_pattern = False
+    opts.intra_op_num_threads = _intra_op_threads()
+    try:
+        opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+    except AttributeError:  # 老版本 onnxruntime 没有该枚举
+        pass
+
+    sess = ort.InferenceSession(model_path, sess_options=opts, providers=providers)
+    info = _ModelSession(
+        path=model_path,
+        engine=engine,
+        size=size,
+        sess=sess,
+        input_name=sess.get_inputs()[0].name,
+        output_name=sess.get_outputs()[0].name,
+    )
+    logger.info(
+        f"{engine} model ready: input={info.input_name} output={info.output_name} "
+        f"threads={opts.intra_op_num_threads} arena=off"
+    )
+    return info
 
 
-def _run_birefnet(image: Image.Image) -> np.ndarray:
-    """
-    使用 BiRefNet 推理得到前景 alpha 蒙版.
+def _infer_alpha(image: Image.Image, engine: str) -> np.ndarray:
+    """用指定引擎推理前景 alpha 蒙版.
 
     返回:
         np.ndarray: float32, 0~1, 尺寸与原图一致 (H, W)，1=前景 0=背景.
     """
     import cv2
 
-    model_path = _resolve_model_path(BIRefNET_MODEL_FILE)
+    model_file, size = _ENGINE_MODELS[engine]
+    model_path = _resolve_model_path(model_file)
     if model_path is None:
         raise FileNotFoundError(
-            f"Model file not found. Looked in: {_model_candidates(BIRefNET_MODEL_FILE)}. "
-            f"Please place {BIRefNET_MODEL_FILE} in backend/models/."
+            f"Model file not found. Looked in: {_model_candidates(model_file)}. "
+            f"Please place {model_file} in backend/models/."
         )
 
-    sess = _get_session(model_path)
+    info = _get_session(model_path, engine, size)
 
-    # 预处理：RGB 归一化 resize 到 1024x1024
+    # 预处理：RGB 归一化 → resize 到模型输入边长
+    # （两个模型的输入形状都是导出时写死的，喂错尺寸 onnxruntime 会直接报错）
     rgb = np.array(image.convert("RGB"), dtype=np.float32) / 255.0          # HWC
-    rgb_resized = cv2.resize(rgb, (_INPUT_SIZE, _INPUT_SIZE), interpolation=cv2.INTER_LINEAR)
+    rgb_resized = cv2.resize(rgb, (size, size), interpolation=cv2.INTER_LINEAR)
     chw = np.transpose(rgb_resized, (2, 0, 1))[None, ...]                    # 1,3,H,W
-    x = (chw - _MEAN) / _STD
+    x = np.ascontiguousarray((chw - _MEAN) / _STD, dtype=np.float32)
 
-    input_name = _get_session.input_name
-    output_name = _get_session.output_name
-    out = sess.run([output_name], {input_name: x.astype(np.float32)})[0]     # 1,1,1024,1024
+    # 只取第一个输出（u2net 家族的第 0 个输出就是融合后的 d0，
+    # 其余 d1~d6 用不到，onnxruntime 会按需裁剪不参与计算）
+    out = info.sess.run([info.output_name], {info.input_name: x})[0]         # 1,1,size,size
 
-    mask = np.squeeze(out)                                                   # 1024,1024
+    mask = np.squeeze(out)                                                   # size,size
     if mask.max() > 1.0 or mask.min() < 0.0:
         # 输出为 logits 时做 sigmoid
         mask = 1.0 / (1.0 + np.exp(-mask))
@@ -125,7 +232,15 @@ def _run_birefnet(image: Image.Image) -> np.ndarray:
     h, w = image.size[1], image.size[0]
     alpha = cv2.resize(mask, (w, h), interpolation=cv2.INTER_LINEAR)
     alpha = np.clip(alpha, 0.0, 1.0).astype(np.float32)
+
+    # 显式释放中间张量：小内存机器上这几百 MB 回来的很及时
+    del x, chw, rgb_resized, rgb, out, mask
     return alpha
+
+
+def _run_alpha(image: Image.Image) -> np.ndarray:
+    """按配置与当前可用内存选择抠图引擎（auto 模式下内存不足自动降级）."""
+    return _infer_alpha(image, resolve_engine())
 
 
 # ============================================================ 边缘精修 / 光影融合
@@ -248,6 +363,7 @@ def replace_background(
 
     - bg_color: 'keep' 跳过（保持原背景）
     - 其他值从 BG_COLOR_MAP 取色
+    - 抠图引擎由 settings.BG_ENGINE 决定（auto 时按可用内存自动降级，见 resolve_engine）
     返回合成后的 RGB 图片.
     """
     if bg_color == "keep":
@@ -258,9 +374,14 @@ def replace_background(
         logger.warning(f"Unknown bg_color '{bg_color}', defaulting to white.")
         bg_color = "white"
 
+    engine = resolve_engine()
+    if engine == "off":
+        logger.warning(f"BG_ENGINE=off：跳过 AI 抠图，保留原背景（bg_color={bg_color}）")
+        return image.convert("RGB") if image.mode != "RGB" else image
+
     target_rgb = BG_COLOR_MAP[bg_color]
 
-    alpha = _run_birefnet(image)
+    alpha = _infer_alpha(image, engine)
     rgb = np.array(image.convert("RGB"), dtype=np.float32)
 
     # 1) 边缘精修：去锯齿、去污染带、发丝级羽化
@@ -286,7 +407,7 @@ def replace_background(
 
     edge_px = int(np.sum((alpha > 0.02) & (alpha < 0.98)))
     logger.info(
-        f"Background replaced (BiRefNet + edge refine): {bg_color} RGB={target_rgb} "
+        f"Background replaced (engine={engine} + edge refine): {bg_color} RGB={target_rgb} "
         f"edge_px={edge_px} ambient={ambient} shadow={shadow}"
     )
     return Image.fromarray(out)

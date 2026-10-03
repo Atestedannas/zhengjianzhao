@@ -166,8 +166,8 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
-import { onShow } from '@dcloudio/uni-app'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { onShow, onUnload } from '@dcloudio/uni-app'
 import ImageCropper from '@/components/ImageCropper.vue'
 import TemplateSelector from '@/components/TemplateSelector.vue'
 import PayModal from '@/components/PayModal.vue'
@@ -195,6 +195,14 @@ onShow(async () => {
   if (!userStore.isLogin) {
     await userStore.login()
   }
+})
+
+// 离开页面时停止轮询，避免定时器泄漏和后台重复请求
+onUnload(() => {
+  photoStore.cancelPolling()
+})
+onUnmounted(() => {
+  photoStore.cancelPolling()
 })
 
 // 裁剪比例
@@ -297,6 +305,8 @@ function onTemplateChange(data) {
 }
 
 async function handleGenerate() {
+  // 防止重复提交：后端按次扣费，处理中不允许再次点击
+  if (photoStore.isProcessing) return
   if (!photoStore.originalPath) {
     uni.showToast({ title: '请先上传照片', icon: 'none' })
     return
@@ -314,6 +324,8 @@ async function handleGenerate() {
 
   const result = await photoStore.processPhoto(filePath)
 
+  if (result.cancelled) return
+
   if (result.needPay) {
     payStore.openPayModal({
       orderNo: result.orderNo,
@@ -325,17 +337,29 @@ async function handleGenerate() {
   if (result.success) {
     await userStore.fetchFreeCount()
     uni.navigateTo({ url: '/pages/result/index' })
+    return
   }
+
+  // 处理失败 / 超时：失败提示与次数已由 store 同步，这里退回规格页可重新提交
+  currentStep.value = 2
 }
 
 async function onPaid() {
   payStore.closePayModal()
+  if (photoStore.isProcessing) return
   const filePath = photoStore.croppedPath || photoStore.originalPath
   const result = await photoStore.processPhoto(filePath)
+
+  if (result.cancelled) return
 
   if (result.success) {
     await userStore.fetchFreeCount()
     uni.navigateTo({ url: '/pages/result/index' })
+    return
+  }
+
+  if (!result.needPay) {
+    currentStep.value = 2
   }
 }
 

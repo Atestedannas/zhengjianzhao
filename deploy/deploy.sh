@@ -98,6 +98,43 @@ if [ "$healthy" -ne 1 ]; then
   die "后端未通过健康检查，部署中断（请查看上面的日志）"
 fi
 
+# 重建 backend/celery 容器后它们会拿到新的内网 IP，而 nginx 里写的是
+# `proxy_pass http://backend:8000`（启动时只解析一次并缓存），
+# 不 reload 就会出现「后端明明是 healthy、所有 /api 却 502」的经典坑。
+if docker ps --format '{{.Names}}' | grep -qx photo-nginx; then
+  if docker exec photo-nginx nginx -t >/dev/null 2>&1; then
+    docker exec photo-nginx nginx -s reload >/dev/null 2>&1 && log "已 reload photo-nginx（重新解析 backend 地址）"
+  else
+    warn "photo-nginx 配置校验未通过，跳过 reload（请手动检查 nginx 配置）"
+  fi
+else
+  warn "未发现 photo-nginx 容器，跳过 reload（若外部 nginx/OpenResty 反代，请自行重载）"
+fi
+
+# ---------- 5.5 校验异步处理链路（模型 + 任务注册）----------
+# 出图现在只发生在 celery-worker 里：如果它看不到模型，用户侧表现是
+# 「一直处理中 → 失败」。这里把新容器里解析到的真实路径打出来，
+# 别等第一个用户请求才发现（模型文件故意不进 Git，靠服务器上的备份保留）。
+log "5.5 校验异步处理链路（celery-worker 的模型与任务）"
+if docker ps --format '{{.Names}}' | grep -qx photo-celery-worker; then
+  docker exec photo-celery-worker python -c "
+from app.core.image_engine.background import _resolve_model_path, BIRefNET_MODEL_FILE, LITE_MODEL_FILE
+import sys
+ok = True
+for name in (LITE_MODEL_FILE, BIRefNET_MODEL_FILE):
+    path = _resolve_model_path(name)
+    print(('  [OK] ' if path else '  [缺失] ') + name + ' -> ' + str(path))
+    ok = ok and bool(path)
+sys.exit(0 if ok else 1)
+" || warn "worker 里抠图模型解析失败：走抠图的请求会落 failed 并自动退还次数，请把模型放回 backend/ 或 backend/models/"
+  docker exec photo-celery-worker python -c "
+from app.tasks.process_task import process_photo
+print('  [OK] 异步任务已注册: ' + process_photo.name)
+" || warn "worker 里任务模块导入失败：异步处理不可用，请查看 docker logs photo-celery-worker"
+else
+  warn "photo-celery-worker 未运行，异步处理不可用：docker logs photo-celery-worker 查看原因"
+fi
+
 printf '\n----- 容器状态 -----\n'
 "${DC[@]}" -p "$PROJECT_NAME" -f "$COMPOSE_FILE" ps
 

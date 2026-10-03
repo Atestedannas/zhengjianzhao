@@ -14,12 +14,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.dependencies import get_db, get_current_user
-from app.core.image_engine.pipeline import process_image, ProcessParams, ProcessResult
+from app.core.image_engine.pipeline import ProcessParams
 from app.core.image_engine.validator import validate_image
 from app.core.image_engine.beautify import BeautyLevel
 from app.core.image_engine.resize import SIZE_PRESETS, get_preset
 from app.core.image_engine.format_converter import SUPPORTED_OUTPUT_FORMATS
-from app.core.billing import process_with_billing
+from app.core.billing import process_with_billing, refund_free_count
 from app.models.user import User
 from app.models.template import SpecTemplate
 from app.models.process_record import ProcessRecord
@@ -29,6 +29,20 @@ from app.utils.error_codes import ErrorCode, NeedPaymentException
 from app.utils.file_utils import generate_unique_filename as generate_temp_filename
 
 router = APIRouter()
+
+
+def _save_pending_original(file_bytes: bytes, ext: str) -> str:
+    """把上传的原图暂存到 web 与 celery worker 共享的目录.
+
+    必须落在 PROCESS_PENDING_DIR（TEMP_FILE_DIR 的子目录）：
+    cleanup_expired_files 用的是非递归 glob（只删 temp 根目录下的图片），
+    所以子目录里的原图不会在排队期间被定时任务删掉。
+    """
+    os.makedirs(settings.PROCESS_PENDING_DIR, exist_ok=True)
+    path = os.path.join(settings.PROCESS_PENDING_DIR, generate_temp_filename(ext or "jpg"))
+    with open(path, "wb") as f:
+        f.write(file_bytes)
+    return path
 
 
 @router.post("/", response_model=ResponseModel)
@@ -69,12 +83,17 @@ async def process_photo(
     - 证件照: id_photo_align 自动人脸对齐, gender 男女切换
     - 背景色: 支持 16 种颜色
 
-    流程:
+    流程（异步，重活不在 web worker 里跑）:
     1. 读取上传文件 → 校验
     2. 模板参数覆盖（如指定 template_id）
-    3. 计费判断
-    4. 图像处理流水线（人脸检测→美颜→裁剪→DPI→换底→压缩→格式转换）
-    5. 保存结果 + 记录
+    3. 计费判断（扣费）
+    4. 原图暂存到共享目录 + 建 status=pending 的处理记录
+    5. 投递 Celery 任务 → **立即返回 record_id**
+    6. 前端轮询 GET /api/v1/process/{record_id}/status
+
+    为什么不同步处理：图像流水线要加载 100MB~3GB 的 ONNX 模型，
+    放在 web worker 里会（a）阻塞事件循环数十秒，（b）把只有几 GB 内存的
+    机器直接拖进内核 OOM（worker 被 SIGKILL → nginx 502）。
     """
     file_bytes = await file.read()
 
@@ -171,37 +190,22 @@ async def process_photo(
         gender=gender if gender and gender != "None" else None,
     )
 
-    # 执行流水线
+    # === 原图暂存到共享目录（celery worker 要能读到）===
+    upload_ext = os.path.splitext(file.filename or "")[1].lstrip(".").lower()
+    pending_ext = upload_ext if upload_ext.isalnum() and len(upload_ext) <= 5 else (fmt or "jpg").lower()
+    if pending_ext == "jpeg":
+        pending_ext = "jpg"
     try:
-        result: ProcessResult = process_image(image, params)
-    except Exception as e:
-        logger.exception(f"Image processing failed: {e}")
-        record = ProcessRecord(
-            user_id=current_user.id,
-            template_id=template_id,
-            request_params=json.dumps(params.__dict__, default=str),
-            is_paid=not billing_result["free_used"],
-            original_size=original_size,
-            result_size=0,
-            processing_time_ms=0,
-            status="failed",
-            error_message=str(e),
-        )
-        db.add(record)
-        await db.commit()
-        raise HTTPException(status_code=500, detail=f"图像处理失败: {e}")
+        original_path = _save_pending_original(file_bytes, pending_ext)
+    except OSError as e:
+        logger.exception(f"暂存上传文件失败: {e}")
+        # 扣费已经发生，落盘失败要把次数退回去
+        if billing_result.get("free_used"):
+            await refund_free_count(db, current_user.id)
+            await db.commit()
+        raise HTTPException(status_code=500, detail="服务器暂存文件失败，本次未扣次数，请重试")
 
-    # 保存结果文件
-    ext = output_format.lower()
-    if ext == "jpeg":
-        ext = "jpg"
-    temp_filename = generate_temp_filename(ext)
-    temp_path = os.path.join(settings.TEMP_FILE_DIR, temp_filename)
-    os.makedirs(settings.TEMP_FILE_DIR, exist_ok=True)
-    with open(temp_path, "wb") as f:
-        f.write(result.data)
-
-    # 写入处理记录
+    # === 建 pending 记录：真正出图交给 celery worker ===
     record = ProcessRecord(
         user_id=current_user.id,
         template_id=template_id,
@@ -209,37 +213,111 @@ async def process_photo(
         is_paid=not billing_result["free_used"],
         paid_amount=0,
         original_size=original_size,
-        result_size=len(result.data),
-        result_pixels=result.result_pixels,
-        result_dpi=result.result_dpi,
+        result_size=0,
+        processing_time_ms=0,
         bg_color=bg_color,
-        processing_time_ms=result.processing_time_ms,
-        status="success",
-        thumb_path=temp_path,
+        status="pending",
+        original_path=original_path,
     )
     db.add(record)
     await db.commit()
     await db.refresh(record)
 
+    # === 投递任务（队列不可用时退次数并明确报错，而不是静默失败）===
+    try:
+        from app.tasks.process_task import process_photo as process_photo_task
+
+        process_photo_task.delay(record.id)
+    except Exception as e:  # noqa: BLE001 —— broker 不可用 / 序列化异常等
+        logger.exception(f"投递处理任务失败: {e}")
+        record.status = "failed"
+        record.error_message = "任务投递失败（处理队列不可用）"[:500]
+        await db.commit()
+        if billing_result.get("free_used"):
+            await refund_free_count(db, current_user.id)
+            await db.commit()
+        raise HTTPException(status_code=503, detail="处理队列暂时不可用，本次未扣次数，请稍后重试")
+
+    logger.info(f"ProcessRecord {record.id} 已入队（user={current_user.id}, template={template_id}）")
+
     return ResponseModel(
         code=200,
-        message="处理成功",
+        message="已提交处理",
         data={
             "record_id": record.id,
+            "status": "pending",
+            "status_url": f"/api/v1/process/{record.id}/status",
             "result_url": f"/api/v1/process/{record.id}/preview",
             "download_url": f"/api/v1/process/{record.id}/download",
-            "file_size_kb": round(result.result_size_kb, 1),
-            "pixels": result.result_pixels,
-            "dpi": result.result_dpi,
-            "output_format": result.output_format,
-            "mime_type": result.mime_type,
-            "warnings": result.warnings,
-            "faces_detected": result.faces_detected,
-            "processing_time_ms": result.processing_time_ms,
             "free_used": billing_result["free_used"],
             # 无限次数时业务层会返回 -1（前端显示为 ∞）；.get 兜底避免 KeyError 500
             "remaining_free_count": billing_result.get("remaining_free_count", current_user.free_count),
             "unlimited": billing_result.get("unlimited", False),
+        },
+    )
+
+
+@router.get("/{record_id}/status", response_model=ResponseModel)
+async def get_process_status(
+    record_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """查询处理任务状态（前端轮询用）.
+
+    status=success 时返回的字段与旧版 POST /process/ 成功返回**完全同名**，
+    前端拿到 success 后可以直接复用原来的成功处理逻辑。
+    status=failed 时 error 是失败原因；后端已自动退还扣掉的免费次数，
+    remaining_free_count 就是退还后的值。
+    """
+    result = await db.execute(
+        select(ProcessRecord).where(
+            ProcessRecord.id == record_id,
+            ProcessRecord.user_id == current_user.id,
+        )
+    )
+    record = result.scalar()
+    if record is None:
+        raise HTTPException(status_code=404, detail="Record not found.")
+
+    raw_params = record.request_params if isinstance(record.request_params, dict) else {}
+    meta = raw_params.get("_result") if isinstance(raw_params.get("_result"), dict) else {}
+
+    # 输出格式以实际落盘文件为准（格式转换可能回退）
+    _, ext = os.path.splitext(record.thumb_path or "")
+    ext = ext.lower()
+    output_format = meta.get("output_format") or (raw_params.get("output_format") or "JPEG")
+    mime_type = meta.get("mime_type") or {
+        ".png": "image/png", ".pdf": "application/pdf", ".webp": "image/webp",
+        ".bmp": "image/bmp", ".tiff": "image/tiff", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+    }.get(ext, "image/jpeg")
+
+    # 剩余次数与记录读取在同一事务快照里，保证「看到 failed」时也一定看得到已退还的次数
+    remaining = (
+        await db.execute(select(User.free_count).where(User.id == current_user.id))
+    ).scalar()
+    if remaining is None:
+        remaining = current_user.free_count
+
+    return ResponseModel(
+        code=200,
+        message="ok",
+        data={
+            "record_id": record.id,
+            "status": record.status,
+            "error": record.error_message if record.status == "failed" else None,
+            "result_url": f"/api/v1/process/{record.id}/preview",
+            "download_url": f"/api/v1/process/{record.id}/download",
+            "file_size_kb": round((record.result_size or 0) / 1024, 1),
+            "pixels": record.result_pixels,
+            "dpi": record.result_dpi,
+            "output_format": output_format,
+            "mime_type": mime_type,
+            "warnings": meta.get("warnings") or [],
+            "faces_detected": meta.get("faces_detected") or 0,
+            "processing_time_ms": record.processing_time_ms or 0,
+            "remaining_free_count": remaining,
+            "unlimited": remaining == -1,
         },
     )
 
@@ -310,6 +388,8 @@ async def preview_result(
     record = result.scalar()
     if record is None:
         raise HTTPException(status_code=404, detail="Record not found.")
+    if record.status in ("pending", "processing"):
+        raise HTTPException(status_code=409, detail="照片还在处理中，请稍候再试")
     if record.status != "success" or not record.thumb_path:
         raise HTTPException(status_code=404, detail="No preview available.")
     if not os.path.exists(record.thumb_path):
@@ -343,6 +423,8 @@ async def download_result(
     record = result.scalar()
     if record is None:
         raise HTTPException(status_code=404, detail="Record not found.")
+    if record.status in ("pending", "processing"):
+        raise HTTPException(status_code=409, detail="照片还在处理中，请稍候再试")
     if record.status != "success" or not record.thumb_path:
         raise HTTPException(status_code=404, detail="File not found.")
     if not os.path.exists(record.thumb_path):

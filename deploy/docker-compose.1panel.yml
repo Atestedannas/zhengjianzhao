@@ -14,7 +14,9 @@ services:
       dockerfile: Dockerfile
     container_name: photo-backend
     restart: unless-stopped
-    command: gunicorn app.main:app -w 4 -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8000 --timeout 300 --graceful-timeout 30 --keep-alive 5 --access-logfile - --error-logfile -
+    # -w 2：单机内存小，worker 越少越安全（重活已经交给 celery，这里只处理请求）；
+    # --max-requests：处理 N 个请求后回收 worker，把可能残留的缓冲内存还给系统
+    command: gunicorn app.main:app -w 2 -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8000 --timeout 300 --graceful-timeout 30 --keep-alive 5 --max-requests 5 --max-requests-jitter 2 --access-logfile - --error-logfile -
     env_file:
       - /opt/zhengjianzhao/photo-zhijianzhao/backend/.env
     volumes:
@@ -41,7 +43,9 @@ services:
       dockerfile: Dockerfile
     container_name: photo-celery-worker
     restart: unless-stopped
-    command: celery -A app.tasks.celery_app worker -l info -c 2 --max-tasks-per-child 100
+    # -c 1：同一时间只跑一个图像处理（单个模型峰值可达 1~3GB，并发就是 OOM）；
+    # --max-tasks-per-child 20：跑一定数量后重启子进程，把模型内存彻底还给系统
+    command: celery -A app.tasks.celery_app worker -l info -c 1 --max-tasks-per-child 20
     env_file:
       - /opt/zhengjianzhao/photo-zhijianzhao/backend/.env
     volumes:

@@ -191,6 +191,8 @@ function getStatusLabel(status: string): string {
     success: '成功',
     failed: '失败',
     processing: '处理中',
+    // 异步改造后新增的待处理状态，同样展示为「处理中」
+    pending: '处理中',
   }
   return map[status] || status
 }
@@ -385,7 +387,8 @@ function handleReEdit(item: HistoryItem) {
   color: #f56c6c;
 }
 
-.status-badge.processing {
+.status-badge.processing,
+.status-badge.pending {
   color: #e6a23c;
 }
 

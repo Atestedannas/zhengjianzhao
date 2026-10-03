@@ -81,6 +81,17 @@ export function getPreview(recordId) {
   })
 }
 
+/**
+ * 查询处理记录状态（异步处理轮询接口）
+ * status: pending | processing | success | failed
+ */
+export function getProcessStatus(recordId) {
+  return request({
+    url: `/api/v1/process/${recordId}/status`,
+    method: 'GET',
+  })
+}
+
 export function downloadResult(recordId) {
   return request({
     url: `/api/v1/process/${recordId}/download`,

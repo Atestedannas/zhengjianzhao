@@ -70,8 +70,8 @@
         </el-table-column>
         <el-table-column prop="status" label="状态" width="90" align="center">
           <template #default="{ row }">
-            <el-tag :type="row.status === 'success' ? 'success' : 'danger'" size="small" effect="light">
-              {{ row.status === 'success' ? '成功' : '失败' }}
+            <el-tag :type="recordStatusTagType(row.status)" size="small" effect="light">
+              {{ recordStatusText(row.status) }}
             </el-tag>
           </template>
         </el-table-column>
@@ -103,6 +103,7 @@ import { ref, reactive, onMounted } from 'vue'
 import { getRecords, exportRecords } from '@/api/records'
 import { getTemplates } from '@/api/templates'
 import type { ProcessRecord, RecordListParams } from '@/api/records'
+import { recordStatusTagType, recordStatusText } from '@/utils/recordStatus'
 import type { Template } from '@/api/templates'
 import dayjs from 'dayjs'
 import Pagination from '@/components/Pagination.vue'

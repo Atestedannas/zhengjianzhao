@@ -125,11 +125,11 @@
           <el-table-column prop="status" label="状态" width="90" align="center">
             <template #default="{ row }">
               <el-tag
-                :type="row.status === 'success' ? 'success' : 'danger'"
+                :type="recordStatusTagType(row.status)"
                 size="small"
                 effect="light"
               >
-                {{ row.status === 'success' ? '成功' : '失败' }}
+                {{ recordStatusText(row.status) }}
               </el-tag>
             </template>
           </el-table-column>
@@ -154,6 +154,7 @@ import { getStats, getTrend, getTemplateUsage } from '@/api/dashboard'
 import { getRecords } from '@/api/records'
 import type { DashboardStats, TrendData } from '@/api/dashboard'
 import type { ProcessRecord } from '@/api/records'
+import { recordStatusTagType, recordStatusText } from '@/utils/recordStatus'
 import {
   Picture, DataAnalysis, Money, ShoppingCart,
   PieChart as PieChartIcon, WarningFilled, ArrowRight,

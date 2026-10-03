@@ -34,11 +34,14 @@ class ProcessRecord(Base):
     bg_color: Mapped[Optional[str]] = mapped_column(String(16), default=None, comment="使用的背景色")
     processing_time_ms: Mapped[int] = mapped_column(Integer, nullable=False, comment="处理耗时（毫秒）")
     status: Mapped[str] = mapped_column(
-        SAEnum("success", "failed", name="process_status_enum"),
-        default="success", nullable=False, comment="处理状态"
+        SAEnum("pending", "processing", "success", "failed", name="process_status_enum"),
+        default="pending", nullable=False, comment="处理状态（异步任务：pending→processing→success/failed）"
     )
     error_message: Mapped[Optional[str]] = mapped_column(String(512), default=None, comment="错误信息")
     thumb_path: Mapped[Optional[str]] = mapped_column(String(512), default=None, comment="缩略图路径")
+    original_path: Mapped[Optional[str]] = mapped_column(
+        String(512), default=None, comment="原图暂存路径（celery 任务读取，处理完删除）"
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, comment="创建时间", default=datetime.utcnow
     )

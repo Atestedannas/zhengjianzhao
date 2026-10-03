@@ -18,8 +18,8 @@
           </el-tag>
         </el-descriptions-item>
         <el-descriptions-item label="处理状态">
-          <el-tag :type="record.status === 'success' ? 'success' : 'danger'" size="small">
-            {{ record.status === 'success' ? '成功' : '失败' }}
+          <el-tag :type="recordStatusTagType(record.status)" size="small">
+            {{ recordStatusText(record.status) }}
           </el-tag>
         </el-descriptions-item>
         <el-descriptions-item label="处理时间">{{ formatTime(record.created_at) }}</el-descriptions-item>
@@ -49,6 +49,7 @@
 import { ref, watch, onMounted } from 'vue'
 import { getRecordDetail } from '@/api/records'
 import type { ProcessRecord } from '@/api/records'
+import { recordStatusTagType, recordStatusText } from '@/utils/recordStatus'
 import dayjs from 'dayjs'
 
 interface Props {

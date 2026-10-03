@@ -1,0 +1,1 @@
+function e(r){return r==="pending"||r==="processing"}function n(r){return r==="success"?"成功":e(r)?"处理中":"失败"}function c(r){return r==="success"?"success":e(r)?"warning":"danger"}export{n as a,c as r};

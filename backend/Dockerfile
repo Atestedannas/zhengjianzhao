@@ -2,7 +2,11 @@ FROM python:3.10-slim
 
 WORKDIR /app
 
-# 安装系统依赖（OpenCV需要libgl1；curl 供容器 healthcheck 使用）
+# 安装系统依赖
+#   libgl1/libglib2.0-0           OpenCV 运行时
+#   libegl1/libgles2/libglvnd0    MediaPipe FaceLandmarker（缺了会报 libEGL.so.1 找不到，美颜降级）
+#   libsm6/libxext6/libxrender1   OpenCV/MediaPipe 图形栈补充
+#   curl                          容器 healthcheck 使用
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     curl \
@@ -10,6 +14,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libffi-dev \
     libgl1 \
     libglib2.0-0 \
+    libegl1 \
+    libgles2 \
+    libglvnd0 \
+    libsm6 \
+    libxext6 \
+    libxrender1 \
     && rm -rf /var/lib/apt/lists/*
 
 # 复制依赖文件并安装
@@ -25,9 +35,11 @@ COPY u2net_human_seg.onnx /root/.u2net/u2net_human_seg.onnx
 # 复制应用代码
 COPY . .
 
-# 创建临时文件目录
-RUN mkdir -p /data/temp
+# 创建临时文件目录（pending/ 存放待处理原图，必须与 web 共享）
+RUN mkdir -p /data/temp/pending
 
 EXPOSE 8000
 
-CMD ["gunicorn", "app.main:app", "-w", "4", "-k", "uvicorn.workers.UvicornWorker", "-b", "0.0.0.0:8000"]
+# 注意：docker-compose 的 command 会覆盖这里。
+# 单机内存有限 + 重活已交给 celery-worker，这里保持 2 个 worker 即可。
+CMD ["gunicorn", "app.main:app", "-w", "2", "-k", "uvicorn.workers.UvicornWorker", "-b", "0.0.0.0:8000", "--max-requests", "5", "--max-requests-jitter", "2"]

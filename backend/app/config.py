@@ -132,6 +132,30 @@ class Settings(BaseSettings):
     TEMP_FILE_TTL_MINUTES: int = 5
     TEMP_FILE_DIR: str = "/data/temp"
 
+    # === 背景抠图引擎（内存治理的核心开关）===
+    # BiRefNet 的 ONNX 输入是导出时写死的 1x3x1024x1024，无法降分辨率推理，
+    # 单次推理峰值实测 >3GB；在 4GB 以下的小机器上会被内核 OOM 直接杀掉
+    # （表现为 gunicorn worker 收到 SIGKILL → nginx 502）。
+    #   auto     —— 默认：按当前可用内存自动选（内存不够就退回轻量模型，绝不冒 OOM 风险）
+    #   birefnet —— 强制 BiRefNet（质量最好，建议可用内存 ≥4GB）
+    #   u2net    —— 强制 u2net_human_seg（输入 320x320，峰值几百 MB，发丝细节略差）
+    #   off      —— 不做 AI 抠图（等价于 bg_color=keep，保留原背景）
+    BG_ENGINE: str = "auto"
+    # auto 模式下，可用内存低于该值（MB）就退回轻量模型
+    BIREFNET_MIN_AVAILABLE_MB: int = 3600
+    # onnxruntime 算子内并行线程数；0 = 自动（min(4, CPU 核数)）
+    ORT_INTRA_OP_THREADS: int = 0
+
+    # === 照片处理任务（Celery 异步）===
+    # 原图暂存目录：必须是 web 与 celery worker 共享的卷（默认在 TEMP_FILE_DIR 下的子目录，
+    # 子目录不会被 cleanup_expired_files 的非递归 glob 命中）
+    PROCESS_PENDING_DIR: str = "/data/temp/pending"
+    # 任务失败自动重试次数（0=不重试）
+    PROCESS_TASK_MAX_RETRIES: int = 1
+    # 记录卡在 pending/processing 超过该分钟数 = worker 中途死亡（如被 OOM 杀），
+    # 由定时任务判定失败并退还次数
+    PROCESS_STUCK_MINUTES: int = 15
+
     # CORS
     CORS_ORIGINS: str = ""  # 逗号分隔的允许域名列表，为空则根据 APP_ENV 自动设置
 

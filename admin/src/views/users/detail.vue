@@ -31,8 +31,8 @@
           <el-table-column prop="template_name" label="模板" min-width="120" />
           <el-table-column label="状态" width="80">
             <template #default="{ row: r }">
-              <el-tag :type="r.status === 'success' ? 'success' : 'danger'" size="small">
-                {{ r.status === 'success' ? '成功' : '失败' }}
+              <el-tag :type="recordStatusTagType(r.status)" size="small">
+                {{ recordStatusText(r.status) }}
               </el-tag>
             </template>
           </el-table-column>
@@ -79,6 +79,7 @@
 <script setup lang="ts">
 import { ref, watch, onMounted } from 'vue'
 import { getUserDetail } from '@/api/users'
+import { recordStatusTagType, recordStatusText } from '@/utils/recordStatus'
 import dayjs from 'dayjs'
 
 interface Props {

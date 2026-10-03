@@ -40,6 +40,7 @@ async def lifespan(app: FastAPI):
     from app.core.template_service import init_templates
     from app.core.admin_seed import init_admin_user
     from app.core.pricing_config import ensure_pricing_config
+    from app.core.db_schema import ensure_process_record_schema
 
     logger.info(f"Starting PhotoService... env={settings.APP_ENV}")
     logger.info(f"Database: {_mask_dsn(settings.DATABASE_URL_FINAL)}")
@@ -48,6 +49,8 @@ async def lifespan(app: FastAPI):
     # 自动补齐缺失的表结构（生产结构变更请走 alembic 迁移）
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # 既有库的列级变更（status ENUM 扩容 / original_path）必须是幂等 ALTER
+        await ensure_process_record_schema(conn)
 
     await init_templates()
     logger.info("Templates loaded.")

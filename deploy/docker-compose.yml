@@ -39,12 +39,14 @@ services:
     restart: unless-stopped
     command: >
       gunicorn app.main:app
-      -w 4
+      -w 2
       -k uvicorn.workers.UvicornWorker
       -b 0.0.0.0:8000
       --timeout 300
       --graceful-timeout 30
       --keep-alive 5
+      --max-requests 5
+      --max-requests-jitter 2
       --access-logfile -
       --error-logfile -
     env_file:
@@ -144,7 +146,7 @@ services:
       dockerfile: Dockerfile
     container_name: photo-celery-worker
     restart: unless-stopped
-    command: celery -A app.tasks.celery_app worker -l info -c 2 --max-tasks-per-child 100
+    command: celery -A app.tasks.celery_app worker -l info -c 1 --max-tasks-per-child 20
     env_file:
       - ../backend/.env
     depends_on:

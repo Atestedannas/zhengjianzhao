@@ -14,7 +14,7 @@ export interface ProcessRecord {
   result_dpi: number | null
   bg_color: string | null
   processing_time_ms: number
-  status: 'success' | 'failed'
+  status: 'pending' | 'processing' | 'success' | 'failed'
   error_message: string | null
   created_at: string
 }
