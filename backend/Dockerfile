@@ -2,6 +2,10 @@ FROM python:3.10-slim
 
 WORKDIR /app
 
+# 换腾讯云 Debian 源（GitHub Actions 通过 SSH 触发构建，服务器在腾讯云，走内网源最快，避免 apt 拉大包时 SSH 空闲断连）
+RUN sed -i 's|deb.debian.org|mirrors.cloud.tencent.com|g' /etc/apt/sources.list.d/debian.sources 2>/dev/null || \
+    sed -i 's|deb.debian.org|mirrors.cloud.tencent.com|g' /etc/apt/sources.list 2>/dev/null || true
+
 # 安装系统依赖
 #   libgl1/libglib2.0-0           OpenCV 运行时
 #   libegl1/libgles2/libglvnd0    MediaPipe FaceLandmarker（缺了会报 libEGL.so.1 找不到，美颜降级）
