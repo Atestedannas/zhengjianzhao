@@ -1,16 +1,87 @@
+# ============================================================
+# Docker 构建上下文排除清单
+#
+# 【重要】这里的通配符和通常的直觉不同：`*.onnx` 只匹配上下文**根目录**下的文件，
+# 不匹配 `models/xxx.onnx`。要递归匹配必须写成 `**/*.onnx`。
+# 所以下面每个模式都同时写「根目录」和「递归」两种形式，避免漏网。
+# ============================================================
+
+# ---------- 大模型文件：不进镜像，运行时由 compose 挂载 ----------
+# 挂载点：backend/models -> /app/models（见 deploy/docker-compose.1panel.yml）
+# 本地 backend/models 实测约 638MB，漏掉一个都等于让镜像白白胖 640MB。
+*.onnx
+**/*.onnx
+*.task
+**/*.task
+*.pth
+**/*.pth
+*.pt
+**/*.pt
+*.h5
+**/*.h5
+*.bin
+**/*.bin
+*.safetensors
+**/*.safetensors
+
+# ---------- 密钥 / 线上配置：不进镜像 ----------
+# 容器里的环境变量由 compose 的 env_file 注入（见 docker-compose.1panel.yml），
+# 把 .env 打进镜像只会让生产密钥随镜像一起泄漏。
+.env
+**/.env
+.env.*
+**/.env.*
+
+# ---------- Python 缓存与虚拟环境 ----------
 __pycache__
+**/__pycache__
 *.pyc
 *.pyo
 *.egg-info
-.env.example
-*.log
+**/*.egg-info
+.pytest_cache
+**/.pytest_cache
+.mypy_cache
+**/.mypy_cache
+venv/
+**/venv/
+.venv/
+**/.venv/
+
+# ---------- 版本控制 / 测试 / 文档 ----------
 .git
 .gitignore
+.github
 tests/
+**/tests/
 test_*.py
-.pytest_cache
-.mypy_cache
-venv/
-.venv/
+**/test_*.py
+docs/
+**/*.md
+
+# ---------- 运行时产物与本地数据 ----------
+*.log
+**/*.log
 temp/
+**/temp/
 *.tmp
+**/*.tmp
+*.db
+**/*.db
+*.db.bak
+**/*.db.bak
+*.sqlite3
+**/*.sqlite3
+err.txt
+**/err.txt
+out.txt
+**/out.txt
+
+# ---------- 编辑器 / 系统 ----------
+.idea/
+**/.idea/
+.vscode/
+**/.vscode/
+.DS_Store
+**/.DS_Store
+Thumbs.db

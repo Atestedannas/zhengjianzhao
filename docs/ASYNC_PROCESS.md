@@ -168,18 +168,25 @@ docker exec photo-mysql mysql -uroot -p"$DB_ROOT_PASSWORD" photo_service -e \
 | 抠图质量下降 | 看 worker 日志里的降级提示；确认空闲内存 ≥ `BIREFNET_MIN_AVAILABLE_MB` 后设 `BG_ENGINE=birefnet` |
 | 需要回滚 | `BG_ENGINE=off`（不抠图，功能不中断）或 `git revert` 后 push（Actions 自动重部署） |
 
-### 模型从哪来（两个容器不一样，别被卷挂载绕晕）
+### 模型从哪来（统一挂载，别再找 /root/.u2net）
 
-| 容器 | `/root/.u2net` | 实际用到的模型 |
+模型**不再打进镜像**，由 compose 把宿主机的 `backend/models` 只读挂载到 `/app/models`：
+
+| 容器 | `/app/models` 来源 | 实际用到的模型 |
 | --- | --- | --- |
-| `photo-backend` | 被 `photo_models` 卷**遮蔽** | 已不再跑抠图，无所谓 |
-| `photo-celery-worker` | 镜像内自带，未被遮蔽 | `/app/models/BiRefNet-….onnx`（`COPY . .` 打进镜像，来自服务器 `backend/models/`）+ `/root/.u2net/u2net_human_seg.onnx`（Dockerfile 显式 COPY，**缺了镜像构建会直接失败**） |
+| `photo-backend` | 宿主机 `backend/models`（只读挂载） | 已不再跑抠图，但启动时会做模型自检 |
+| `photo-celery-worker` | 同上，同一个宿主机目录 | `/app/models/BiRefNet-….onnx`（内存够时）+ `/app/models/u2net_human_seg.onnx`（兜底轻量） |
+
+`/root/.u2net` 已经废弃（原来的 `photo_models` 命名卷也一并去掉了）——
+命名卷在空的时候会悄悄从镜像里复制内容，改了模型很难察觉；
+改成宿主机目录绑定挂载后「看到什么就是什么」。
 
 解析顺序固定为：`backend/models/`（容器内即 `/app/models`）→ `/root/.u2net` → 当前目录 → 当前目录/models，
-所以 `/app/models` 是权威位置，任何卷都遮不住它。
+所以 `/app/models` 是权威位置。**所有模型都必须放在服务器上的 `backend/models/` 一个目录里。**
 
-`deploy/deploy.sh` 每次部署会自动打印 worker 里两个模型的**真实解析路径**，
-看到 `[缺失]` 就是模型没在服务器上（`backend/u2net*.onnx`、`backend/models/*.onnx` 都不进 Git）。
+`deploy/deploy.sh` 每次部署会先打印宿主机 `backend/models/` 的完整清单，
+再打印 worker 里两个模型的**真实解析路径**，
+看到 `[缺失]` 就是模型没放在服务器上（模型文件不进 Git，靠备份保留）。
 
 ### 建议但尚未执行的两件事
 

@@ -4,6 +4,11 @@
 # 使用绝对路径（1Panel 会将 compose 文件复制到内部目录执行）
 # 项目路径: /opt/zhengjianzhao/photo-zhijianzhao
 # 部署方式: 在 1Panel → 容器 → 编排 中粘贴此文件
+#
+# 【部署模型】代码和模型都从宿主机只读挂载，不烤进镜像：
+#     backend/app     -> /app/app      改 Python 只需重启容器（秒级，无需 build）
+#     backend/models  -> /app/models   约 640MB 模型，改模型只需换文件 + 重启
+#   只有 requirements.txt / Dockerfile 变了才需要 docker compose build。
 # ============================================================
 
 services:
@@ -20,9 +25,15 @@ services:
     env_file:
       - /opt/zhengjianzhao/photo-zhijianzhao/backend/.env
     volumes:
+      # 代码只读挂载：改 Python 不用重建镜像，重启容器即生效
+      - /opt/zhengjianzhao/photo-zhijianzhao/backend/app:/app/app:ro
+      # 模型只读挂载：u2net / BiRefNet / face_landmarker / face_parsing 全在这里，
+      # 代码统一从 /app/models 解析（background.py 的 _model_candidates 第三候选）
+      - /opt/zhengjianzhao/photo-zhijianzhao/backend/models:/app/models:ro
+      # 模板配置（启动时 init_templates 读 presets.yaml），挂了改模板就不用 rebuild
+      - /opt/zhengjianzhao/photo-zhijianzhao/backend/templates_config:/app/templates_config:ro
       - photo_temp:/data/temp
       - photo_uploads:/data/uploads
-      - photo_models:/root/.u2net
     ports:
       - "8800:8000"
     healthcheck:
@@ -49,6 +60,10 @@ services:
     env_file:
       - /opt/zhengjianzhao/photo-zhijianzhao/backend/.env
     volumes:
+      # 出图只发生在 worker 里，所以代码和模型这里也必须挂，缺一个就是「一直处理中 → 失败」
+      - /opt/zhengjianzhao/photo-zhijianzhao/backend/app:/app/app:ro
+      - /opt/zhengjianzhao/photo-zhijianzhao/backend/models:/app/models:ro
+      - /opt/zhengjianzhao/photo-zhijianzhao/backend/templates_config:/app/templates_config:ro
       - photo_temp:/data/temp
       - photo_uploads:/data/uploads
     networks:
@@ -66,6 +81,7 @@ services:
     env_file:
       - /opt/zhengjianzhao/photo-zhijianzhao/backend/.env
     volumes:
+      - /opt/zhengjianzhao/photo-zhijianzhao/backend/app:/app/app:ro
       - photo_temp:/data/temp
       - photo_uploads:/data/uploads
     networks:
@@ -95,12 +111,12 @@ services:
       - photo-net
 
 # ======================== 数据卷 ========================
+# 注意：模型不再用命名卷（photo_models 已废弃）——命名卷在空的时候会从镜像里
+# 复制内容，改了模型文件很难感知；改成宿主机目录绑定挂载后「看到什么就是什么」。
 volumes:
   photo_temp:
     driver: local
   photo_uploads:
-    driver: local
-  photo_models:
     driver: local
 
 # ======================== 网络 ========================

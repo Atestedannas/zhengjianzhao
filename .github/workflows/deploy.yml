@@ -16,9 +16,11 @@ concurrency:
 
 jobs:
   deploy:
-    name: 同步代码 → 重建后端 → 重启容器
+    name: 服务器 git pull → 按需重建 → 重启容器
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # 代码改由服务器自己 git pull（只传差异），apt 换源修复后一次构建约 2~3 分钟；
+    # 日常部署只是 restart（秒级），20 分钟余量充足。
+    timeout-minutes: 20
 
     steps:
       - name: 检出代码
@@ -45,7 +47,7 @@ jobs:
             -o TCPKeepAlive=yes \
             "$SSH_USER@$SSH_HOST" 'echo "SSH 连通，服务器主机名：$(hostname)"'
 
-      - name: 同步文件到服务器
+      - name: 通知服务器 git pull 并部署
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
           SSH_PORT: ${{ secrets.SSH_PORT }}
@@ -53,25 +55,10 @@ jobs:
         run: |
           set -euo pipefail
           PORT="${SSH_PORT:-22}"
-          # 用仓库里的排除清单保护服务器上的 .env 和大模型文件；不使用 --delete，
-          # 所以服务器上已有的文件永远不会被删掉。
-          # --partial --inplace --timeout：单文件传输中断可续传，避免大模型文件半途失败
-          rsync -rlptzv --no-owner --no-group \
-            --partial --inplace --timeout=300 \
-            --exclude-from=deploy/rsync-exclude.txt \
-            -e "ssh -i ~/.ssh/id_deploy -p $PORT -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -o ServerAliveCountMax=120 -o TCPKeepAlive=yes" \
-            ./ "$SSH_USER@$SSH_HOST:/opt/zhengjianzhao/photo-zhijianzhao/"
-
-      - name: 服务器上重建并重启
-        env:
-          SSH_HOST: ${{ secrets.SSH_HOST }}
-          SSH_PORT: ${{ secrets.SSH_PORT }}
-          SSH_USER: ${{ secrets.SSH_USER }}
-        run: |
-          set -euo pipefail
-          PORT="${SSH_PORT:-22}"
-          # nohup 让 deploy.sh 脱离 SSH 会话在服务器上独立运行：
-          #   即使 Actions 的 SSH 断了，服务器上的 docker build 也不会被带走。
+          # 代码由服务器自己 git pull 拉取（只传差异，比 rsync 全量同步快得多，
+          # 也没有整目录传输中途断连的风险）。.env / 模型文件不在 git 里，pull 不会动它们。
+          # nohup 让部署脚本脱离 SSH 会话在服务器上独立运行：
+          #   即使 Actions 的 SSH 断了，服务器上的部署也不会被带走。
           # 随后每 15 秒输出一次心跳 + 日志尾部，保持 SSH 通道有流量，双保险。
           ssh -i ~/.ssh/id_deploy -p "$PORT" \
             -o StrictHostKeyChecking=accept-new \
@@ -81,9 +68,9 @@ jobs:
             "$SSH_USER@$SSH_HOST" bash -s <<'REMOTE'
           set -euo pipefail
           cd /opt/zhengjianzhao/photo-zhijianzhao
-          nohup bash deploy/deploy.sh > /tmp/deploy.log 2>&1 < /dev/null &
+          nohup bash deploy/git-pull-deploy.sh > /tmp/deploy.log 2>&1 < /dev/null &
           PID=$!
-          echo "==> deploy.sh PID=$PID，开始跟随日志"
+          echo "==> 部署进程 PID=$PID，开始跟随日志"
           while kill -0 "$PID" 2>/dev/null; do
             sleep 15
             echo "--- 心跳 $(date -u '+%T') UTC ---"
@@ -91,7 +78,7 @@ jobs:
           done
           wait "$PID"
           EXIT=$?
-          echo "==> deploy.sh 退出码：$EXIT"
+          echo "==> 部署退出码：$EXIT"
           echo "===== 最终日志（末尾 100 行）====="
           tail -n 100 /tmp/deploy.log || true
           exit $EXIT

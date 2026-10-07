@@ -57,9 +57,11 @@ services:
       redis:
         condition: service_healthy
     volumes:
+      # 代码/模型/模板配置都只读挂载：改这些不用重建镜像，重启容器即生效
       - ../backend/app:/app/app:ro
+      - ../backend/models:/app/models:ro
+      - ../backend/templates_config:/app/templates_config:ro
       - temp_data:/data/temp
-      - model_data:/root/.u2net
     healthcheck:
       # 后端真实路由是 /health（不在 /api/v1 下）
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
@@ -135,6 +137,8 @@ services:
       redis:
         condition: service_healthy
     volumes:
+      - ../backend/app:/app/app:ro
+      - ../backend/models:/app/models:ro
       - temp_data:/data/temp
     networks:
       - photo-network
@@ -153,6 +157,9 @@ services:
       redis:
         condition: service_healthy
     volumes:
+      # 出图只在 worker 里发生，代码和模型这里也必须挂
+      - ../backend/app:/app/app:ro
+      - ../backend/models:/app/models:ro
       - temp_data:/data/temp
     networks:
       - photo-network
@@ -164,8 +171,6 @@ volumes:
   redis_data:
     driver: local
   temp_data:
-    driver: local
-  model_data:
     driver: local
   nginx_logs:
     driver: local
