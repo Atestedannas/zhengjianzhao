@@ -120,6 +120,10 @@ services:
     depends_on:
       - backend
     networks:
+      # nginx 的 proxy_pass http://backend:8000 要靠 DNS 解析 backend，
+      # 而 backend 只在 1panel-network 里，不加这个网络 nginx 会启动失败
+      # （host not found in upstream "backend" → 容器崩溃重启循环）。
+      - 1panel-network
       - photo-net
 
 # ======================== 数据卷 ========================
