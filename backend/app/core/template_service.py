@@ -25,14 +25,21 @@ def _load_yaml() -> list[dict]:
 
 
 async def init_templates() -> None:
-    """应用启动时调用：将 presets.yaml 中的模板同步到数据库."""
+    """应用启动时调用：将 presets.yaml 中的模板同步到数据库.
+
+    【幂等设计】spec_templates.name 没有唯一索引，MySQL 的
+    on_duplicate_key_update 在没有唯一键冲突时等于纯 INSERT，
+    会导致**每次启动都重复插入 4 条记录**。配合 gunicorn --max-requests
+    的频繁重启，表会以每天 2000+ 行的速度膨胀（实测 6 小时 122 次重启
+    → 1.4 万行垃圾数据 → /templates/ 接口要序列化 2.7MB、耗时 9.7s）。
+
+    所以这里统一改成「先按 name 查，存在则更新、不存在才插入」，
+    无论有没有唯一索引都不会重复灌数据。
+    """
     from app.dependencies import async_session_factory
 
     templates = _load_yaml()
     logger.info(f"Loading {len(templates)} preset templates...")
-
-    # 检测数据库类型
-    is_sqlite = "sqlite" in settings.DATABASE_URL_FINAL
 
     async with async_session_factory() as db:
         try:
@@ -51,33 +58,26 @@ async def init_templates() -> None:
                     remark=tmpl.get("remark", ""),
                 )
 
-                if is_sqlite:
-                    # SQLite: check if exists, then insert or update
-                    result = await db.execute(
-                        select(SpecTemplate).where(SpecTemplate.name == tmpl["name"])
+                # 统一用「先查后写」：有唯一索引时是 1 次查询 + 1 次更新，
+                # 没有时也不会插入重复行，两种库结构都幂等。
+                result = await db.execute(
+                    select(SpecTemplate).where(SpecTemplate.name == tmpl["name"])
+                )
+                existing = result.scalar_one_or_none()
+
+                if existing is not None:
+                    # 只在内容真的变了时才写，减少无谓的 binlog
+                    changed = any(
+                        getattr(existing, k) != v
+                        for k, v in values.items()
+                        if k != "name"
                     )
-                    existing = result.scalar_one_or_none()
-                    if existing:
+                    if changed:
                         for k, v in values.items():
                             if k != "name":
                                 setattr(existing, k, v)
-                    else:
-                        stmt = insert(SpecTemplate).values(**values)
-                        await db.execute(stmt)
                 else:
-                    # MySQL: on_duplicate_key_update
-                    from sqlalchemy.dialects.mysql import insert as mysql_insert
-                    stmt = mysql_insert(SpecTemplate).values(**values).on_duplicate_key_update(
-                        width_px=values["width_px"],
-                        height_px=values["height_px"],
-                        dpi=values["dpi"],
-                        min_kb=values["min_kb"],
-                        max_kb=values["max_kb"],
-                        allowed_bg_colors=values["allowed_bg_colors"],
-                        output_format=values["output_format"],
-                        physical_size_mm=values["physical_size_mm"],
-                        remark=values["remark"],
-                    )
+                    stmt = insert(SpecTemplate).values(**values)
                     await db.execute(stmt)
 
             await db.commit()

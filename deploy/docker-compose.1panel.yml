@@ -20,13 +20,21 @@ services:
     container_name: photo-backend
     restart: unless-stopped
     # -w 2：单机内存小，worker 越少越安全（重活已经交给 celery，这里只处理请求）；
-    # --max-requests：处理 N 个请求后回收 worker，把可能残留的缓冲内存还给系统
-    command: gunicorn app.main:app -w 2 -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8000 --timeout 300 --graceful-timeout 30 --keep-alive 5 --max-requests 5 --max-requests-jitter 2 --access-logfile - --error-logfile -
+    # --max-requests：处理 N 个请求后回收 worker，把可能残留的缓冲内存还给系统。
+    #   异步化后 web worker 不再加载 ONNX 大模型，内存很干净，不必每 5 个请求就
+    #   重启一次（实测 --max-requests 5 → 每 3 分钟重启一轮，6 小时 122 次重启，
+    #   每次启动都会重跑 init_templates，是 spec_templates 表膨胀的直接推手）。
+    #   提高到 2000：仍能定期回收内存，但不再频繁打扰用户。
+    command: gunicorn app.main:app -w 2 -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8000 --timeout 300 --graceful-timeout 30 --keep-alive 5 --max-requests 2000 --max-requests-jitter 200 --access-logfile - --error-logfile -
     env_file:
       - /opt/zhengjianzhao/photo-zhijianzhao/backend/.env
     volumes:
       # 代码只读挂载：改 Python 不用重建镜像，重启容器即生效
       - /opt/zhengjianzhao/photo-zhijianzhao/backend/app:/app/app:ro
+      # 【关键】.env 必须挂载覆盖镜像里的旧文件：Dockerfile 的 COPY . . 会把
+      # 构建时的 .env 烤进镜像，pydantic-settings 优先读工作目录的 /app/.env，
+      # 而不是 compose 的 env_file。不挂这一行，改宿主机 .env 根本不生效。
+      - /opt/zhengjianzhao/photo-zhijianzhao/backend/.env:/app/.env:ro
       # 模型只读挂载：u2net / BiRefNet / face_landmarker / face_parsing 全在这里，
       # 代码统一从 /app/models 解析（background.py 的 _model_candidates 第三候选）
       - /opt/zhengjianzhao/photo-zhijianzhao/backend/models:/app/models:ro
@@ -62,6 +70,8 @@ services:
     volumes:
       # 出图只发生在 worker 里，所以代码和模型这里也必须挂，缺一个就是「一直处理中 → 失败」
       - /opt/zhengjianzhao/photo-zhijianzhao/backend/app:/app/app:ro
+      # .env 覆盖镜像旧文件（理由同 backend，见上）
+      - /opt/zhengjianzhao/photo-zhijianzhao/backend/.env:/app/.env:ro
       - /opt/zhengjianzhao/photo-zhijianzhao/backend/models:/app/models:ro
       - /opt/zhengjianzhao/photo-zhijianzhao/backend/templates_config:/app/templates_config:ro
       - photo_temp:/data/temp
@@ -82,6 +92,8 @@ services:
       - /opt/zhengjianzhao/photo-zhijianzhao/backend/.env
     volumes:
       - /opt/zhengjianzhao/photo-zhijianzhao/backend/app:/app/app:ro
+      # .env 覆盖镜像旧文件（理由同 backend）
+      - /opt/zhengjianzhao/photo-zhijianzhao/backend/.env:/app/.env:ro
       - photo_temp:/data/temp
       - photo_uploads:/data/uploads
     networks:

@@ -103,6 +103,9 @@ services:
       start_period: 30s
     networks:
       - photo-network
+      # backend 由 docker-compose.1panel.yml 部署（只在 1panel-network 里），
+      # 这里不加同名网络的话，backend 解析不到 photo-mysql。
+      - 1panel-network
 
   # ======================== Redis 7 ========================
   redis:
@@ -122,6 +125,11 @@ services:
       retries: 5
     networks:
       - photo-network
+      # backend/celery 由 docker-compose.1panel.yml 部署，只在 1panel-network 里。
+      # 不加这个网络的话，celery 会报
+      # "Cannot connect to redis://photo-redis:6379: Temporary failure in name resolution"，
+      # 任务全部投递失败 → process 接口超时。mysql 同理（见上）。
+      - 1panel-network
 
   # ======================== Celery Beat（定时任务调度） ========================
   celery-beat:
@@ -179,3 +187,8 @@ volumes:
 networks:
   photo-network:
     driver: bridge
+  # 1Panel 建好的现有网络：docker-compose.1panel.yml 部署的 backend/celery 都在这里。
+  # external = true：不要尝试新建/删除它， compose down 时也不会把它带走。
+  1panel-network:
+    external: true
+    name: 1panel-network
