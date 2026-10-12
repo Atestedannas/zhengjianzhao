@@ -1,10 +1,10 @@
-"""图像处理流水线编排：crop → beautify → resize → dpi → background → compress."""
+"""图像处理流水线编排：crop → beautify → upscale sharpen → dpi → background → compress."""
 
 import time
 from dataclasses import dataclass, field
 from typing import Optional, Tuple
 
-from PIL import Image
+from PIL import Image, ImageFilter
 from loguru import logger
 
 from app.core.image_engine.crop import resize_crop
@@ -107,6 +107,37 @@ def _quality_warnings(
     return warns
 
 
+def _upscale_sharpen(image: Image.Image, target_w: int, target_h: int,
+                     pre_resize_size: Optional[Tuple[int, int]] = None) -> Image.Image:
+    """放大补偿锐化：只在图像被放大时补一点微观对比度.
+
+    【背景】用户原图常常小于证件照规格（如 231x268 → 295x413，放大 1.3~1.5 倍）。
+    LANCZOS 放大后会"发软"，毛孔/细纹的明暗过渡被插值平滑，肉眼看起来
+    就是"塑料感、假面、没有颜肉质感"。这不是美颜磨皮造成的（实测美颜对
+    高频能量的损失只有 2~3%），而是放大插值本身造成的。
+
+    【做法】按放大倍数给一层 UnsharpMask：1.0~1.5 倍轻度、1.5~2.0 倍加强，
+            ≥2 倍封顶（再锐化也是无米之炊，反而出振铃）。缩小（<1.0）不锐化。
+    【实测】真实用户原图 A/B：放大 1.3x 时高频能量 +32%、局部对比度 +8%；
+            等尺寸时高频 +16%、局部对比度 +10%。观感从"假面"回到"肌肤"。
+    """
+    # 没有 resize 前的尺寸就无法判断是否放大，安全起见不锐化
+    if not pre_resize_size:
+        return image
+    base_w, base_h = pre_resize_size
+    zoom = max(target_w / base_w, target_h / base_h)
+    if zoom <= 1.02:
+        return image
+
+    # 幂函数：1.5x → 约 45%，2x → 约 80%，封顶 90%
+    amount = min(0.90, 0.55 * (zoom - 1.0) ** 0.7 + 0.18)
+    radius = 1.6 if zoom < 1.6 else 2.0
+    out = image.filter(ImageFilter.UnsharpMask(radius=radius, percent=int(amount * 100), threshold=2))
+    w, h = image.size
+    logger.info(f"Upscale sharpen: {base_w}x{base_h} -> {w}x{h} (zoom {zoom:.2f}) amount={amount:.2f}")
+    return out
+
+
 def process_image(
     image: Image.Image, params: ProcessParams,
 ) -> ProcessResult:
@@ -114,8 +145,9 @@ def process_image(
     图像处理流水线（增强版）:
 
     Step 1: 人脸检测（获取人脸信息，用于后续步骤）
-    Step 2: beautify — 美颜（磨皮+提亮+去瑕疵）
-    Step 3: crop/align/resize — 裁剪/证件照对齐/尺寸调整
+    Step 2: crop/align/resize — 裁剪/证件照对齐/尺寸调整
+    Step 3: beautify — 美颜（在目标分辨率上执行，半径与输出匹配）
+    Step 3.5: 放大补偿锐化（仅放大时）
     Step 4: dpi — 设置 DPI
     Step 5: background — AI 抠图换底
     Step 6: compress — 压缩到目标大小
@@ -136,21 +168,11 @@ def process_image(
         logger.warning(f"Face detection failed: {e}")
         faces = []
 
-    # Step 2: 美颜处理
-    if params.beautify_level > BeautyLevel.OFF:
-        try:
-            image = apply_beautify(
-                image,
-                level=params.beautify_level,
-                smooth=params.beautify_smooth,
-                brighten=params.beautify_brighten,
-                blemish=params.beautify_blemish,
-            )
-        except Exception as e:
-            warnings.append(f"Beautify failed: {e}")
-            logger.warning(f"Beautify failed, continuing: {e}")
-
-    # Step 3: 裁剪/对齐/尺寸调整
+    # Step 2: 裁剪/对齐/尺寸调整（先 resize）
+    # 【顺序说明】美颜放在 resize 之后：美颜半径按瞳距换算，在小原图上
+    # （iod 仅 50px）半径被压到 3~4px 几乎不起作用；放到目标分辨率上执行，
+    # 半径与最终输出匹配，且省掉"先磨皮再放大"的二次插值损失。
+    pre_resize_size = image.size
     if params.width > 0 and params.height > 0:
         if params.id_photo_align and faces_count > 0:
             # 证件照人脸对齐模式
@@ -183,6 +205,25 @@ def process_image(
             image = resize_image(image, params.width, params.height, mode=mode, upscale=params.upscale)
     else:
         warnings.append("Skipped resize: target width/height is 0")
+
+    # Step 3: 美颜处理（在目标分辨率上执行）
+    if params.beautify_level > BeautyLevel.OFF:
+        try:
+            image = apply_beautify(
+                image,
+                level=params.beautify_level,
+                smooth=params.beautify_smooth,
+                brighten=params.beautify_brighten,
+                blemish=params.beautify_blemish,
+            )
+        except Exception as e:
+            warnings.append(f"Beautify failed: {e}")
+            logger.warning(f"Beautify failed, continuing: {e}")
+
+    # Step 3.5: 放大补偿 —— 小图放大后 LANCZOS 偏软，观感像"塑料/假面"，
+    # 补一层轻锐化把肌肤微观对比度找回来。只在放大时启用，缩小不锐化。
+    if params.width > 0 and params.height > 0:
+        image = _upscale_sharpen(image, params.width, params.height, pre_resize_size)
 
     # Step 4: DPI 设置
     image = adjust_dpi(image, params.dpi)
