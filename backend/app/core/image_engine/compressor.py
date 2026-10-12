@@ -72,7 +72,9 @@ def binary_compress(
             high = mid - 1
 
     if best_data is not None:
-        if best_size_kb < min_kb:
+        # 浮点边界：20.0KB 对 min_kb=20 不应报「低于下限」，
+        # 给 0.5KB 的容差避免无意义的警告透传给用户
+        if best_size_kb < min_kb - 0.5:
             warnings = f"Quality set to {best_quality}, but size {best_size_kb:.1f}KB is below min {min_kb}KB."
         logger.info(f"Binary compress: quality={best_quality} => {best_size_kb:.1f}KB")
         return best_data, best_quality, warnings
