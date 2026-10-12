@@ -47,7 +47,8 @@ def _image_to_png_bytes(image: Image.Image) -> bytes:
     if image.mode not in ("RGB", "RGBA"):
         image = image.convert("RGBA")
     buf = BytesIO()
-    image.save(buf, format="PNG")
+    dpi = image.info.get("dpi", (300, 300))
+    image.save(buf, format="PNG", dpi=dpi)
     return buf.getvalue()
 
 
@@ -83,15 +84,15 @@ def convert_format(
         buf = BytesIO()
         if image.mode != "RGB":
             image = image.convert("RGB")
-        image.save(buf, format="WEBP", quality=quality)
+        image.save(buf, format="WEBP", quality=quality, dpi=image.info.get("dpi", (300, 300)))
         data = buf.getvalue()
     elif fmt == "BMP":
         buf = BytesIO()
-        image.save(buf, format="BMP")
+        image.save(buf, format="BMP", dpi=image.info.get("dpi", (300, 300)))
         data = buf.getvalue()
     elif fmt == "TIFF":
         buf = BytesIO()
-        image.save(buf, format="TIFF")
+        image.save(buf, format="TIFF", dpi=image.info.get("dpi", (300, 300)))
         data = buf.getvalue()
     else:
         data = _image_to_jpeg_bytes(image, quality)

@@ -225,9 +225,6 @@ def process_image(
     if params.width > 0 and params.height > 0:
         image = _upscale_sharpen(image, params.width, params.height, pre_resize_size)
 
-    # Step 4: DPI 设置
-    image = adjust_dpi(image, params.dpi)
-
     # Step 5: 背景替换（AI 抠图失败时降级保留原图，避免整单裸 500）
     if params.bg_color and params.bg_color != "keep":
         try:
@@ -235,6 +232,11 @@ def process_image(
         except Exception as e:
             warnings.append(f"AI抠图失败(2004)，保留原背景: {e}")
             logger.warning(f"Background replacement failed, keeping original: {e}")
+
+    # Step 6: DPI 设置
+    # 【顺序】必须在抠图/锐化之后、压缩之前：前面的步骤都返回新 Image 对象，
+    # 会丢掉 info['dpi']。放最后设置，再由 binary_compress 显式写进 JPEG。
+    image = adjust_dpi(image, params.dpi)
 
     # Step 6/7: 压缩 + 格式转换
     output_format = params.output_format.upper()

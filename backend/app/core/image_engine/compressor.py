@@ -29,72 +29,57 @@ def binary_compress(
         size_kb = len(data) / 1024
         return data, 100, f"Non-JPEG format ({fmt}): {size_kb:.1f}KB"
 
-    # min_kb=0 表示不限制最小值，使用高质量直接输出
+    # min_kb=0 表示不限制最小值，只要不超 max_kb 就给最高质量
     if min_kb <= 0:
-        buf = BytesIO()
-        image.save(buf, format="JPEG", quality=95, dpi=image.info.get("dpi", (72, 72)))
-        data = buf.getvalue()
-        size_kb = len(data) / 1024
-        if size_kb <= max_kb:
-            logger.info(f"High quality compress: q=95 => {size_kb:.1f}KB (min_kb=0)")
-            return data, 95, ""
-        # 超出 max_kb，降质量直到满足
-        for q in range(90, 0, -5):
+        dpi = image.info.get("dpi", (72, 72))
+        for q in (100, 98, 95, 92, 90, 88, 85, 80, 75, 70, 60, 50, 40, 30, 20, 10, 5, 1):
             buf = BytesIO()
-            image.save(buf, format="JPEG", quality=q, dpi=image.info.get("dpi", (72, 72)))
+            image.save(buf, format="JPEG", quality=q, dpi=dpi)
             data = buf.getvalue()
             size_kb = len(data) / 1024
             if size_kb <= max_kb:
-                logger.info(f"High quality compress: q={q} => {size_kb:.1f}KB")
+                logger.info(f"High quality compress: q={q} => {size_kb:.1f}KB (min_kb=0)")
                 return data, q, ""
-        # 极端情况：quality=1 还超
         buf = BytesIO()
-        image.save(buf, format="JPEG", quality=1, dpi=image.info.get("dpi", (72, 72)))
+        image.save(buf, format="JPEG", quality=1, dpi=dpi)
         data = buf.getvalue()
         size_kb = len(data) / 1024
         return data, 1, f"Even quality=1 exceeds max {max_kb}KB: {size_kb:.1f}KB"
 
-    low, high = 1, 100
+    # 【策略】质量优先：在不超过 max_kb 的前提下取最大的 quality。
+    # 证件照出图质量敏感，同样的体积预算内应给到最高画质（体积只影响
+    # 报名系统的上传上限，画质决定了打印效果）。
     best_data = None
     best_quality = None
     best_size_kb = None
     warnings = ""
+    dpi = image.info.get("dpi", (72, 72))
 
+    low, high = 1, 100
     while low <= high:
         mid = (low + high) // 2
         buf = BytesIO()
-        image.save(buf, format="JPEG", quality=mid, dpi=image.info.get("dpi", (72, 72)))
+        image.save(buf, format="JPEG", quality=mid, dpi=dpi)
         data = buf.getvalue()
         size_kb = len(data) / 1024
 
-        # 记录最接近目标范围的结果
-        if best_size_kb is None or abs(size_kb - (min_kb + max_kb) / 2) < abs(best_size_kb - (min_kb + max_kb) / 2):
-            best_data = data
-            best_quality = mid
-            best_size_kb = size_kb
-
-        if min_kb <= size_kb <= max_kb:
-            logger.info(f"Binary compress: quality={mid} => {size_kb:.1f}KB (in range)")
-            return data, mid, ""
-
-        if size_kb < min_kb:
+        if size_kb <= max_kb:
+            # 记录「不超上限」里的最高质量
+            if best_quality is None or mid > best_quality:
+                best_data, best_quality, best_size_kb = data, mid, size_kb
             low = mid + 1
         else:
             high = mid - 1
 
-    # 二分法未在范围内找到 → 返回最佳近似
-    if best_size_kb is not None:
+    if best_data is not None:
         if best_size_kb < min_kb:
             warnings = f"Quality set to {best_quality}, but size {best_size_kb:.1f}KB is below min {min_kb}KB."
-        else:
-            warnings = f"Quality set to {best_quality}, but size {best_size_kb:.1f}KB exceeds max {max_kb}KB."
-
-        logger.warning(f"Binary compress best effort: quality={best_quality} => {best_size_kb:.1f}KB")
+        logger.info(f"Binary compress: quality={best_quality} => {best_size_kb:.1f}KB")
         return best_data, best_quality, warnings
 
-    # 极端情况：直接返回 quality=80
+    # 极端情况：quality=1 都超过 max_kb → 返回体积最小的 q=1 结果
     buf = BytesIO()
-    image.save(buf, format="JPEG", quality=80)
+    image.save(buf, format="JPEG", quality=1, dpi=dpi)
     data = buf.getvalue()
     size_kb = len(data) / 1024
-    return data, 80, f"Fallback quality 80: {size_kb:.1f}KB"
+    return data, 1, f"Even quality=1 exceeds max {max_kb}KB: {size_kb:.1f}KB"
