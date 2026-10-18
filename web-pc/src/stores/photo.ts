@@ -123,7 +123,7 @@ export const usePhotoStore = defineStore('photo', () => {
   // 当前选中的参数
   const selectedTemplate = ref<number | null>(null)
   const selectedBgColor = ref('white')
-  // 0=关闭原图直出, 1=自然微调（唯一对外档位，后端强制合规红线）
+  // 0=关闭原图直出, 1=自然微调（证件照默认档，后端强制合规红线）, 4=艺术档（仅非证件照）
   const beautifyLevel = ref(1)
   const beautifyOptions = ref({
     smooth: true,

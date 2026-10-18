@@ -13,6 +13,11 @@ def binary_compress(
     """
     二分法在 JPEG quality [1, 100] 内搜索，使输出文件大小落在 [min_kb, max_kb] 范围内.
 
+    【编码参数】subsampling=0（4:4:4 不做色度抽样）+ optimize=True：
+    PIL 默认的 4:2:0 会把肤色/唇色/发丝边缘的色度抽稀一半，小尺寸证件照上
+    感知非常明显（发糊、红边发脏）。证件照体积预算（45~100KB）下 4:4:4
+    只增加 10~20% 体积，画质收益直接可见。
+
     参数:
         image: PIL.Image (RGB)
         min_kb: 最小文件大小 (KB)
@@ -34,14 +39,16 @@ def binary_compress(
         dpi = image.info.get("dpi", (72, 72))
         for q in (100, 98, 95, 92, 90, 88, 85, 80, 75, 70, 60, 50, 40, 30, 20, 10, 5, 1):
             buf = BytesIO()
-            image.save(buf, format="JPEG", quality=q, dpi=dpi)
+            image.save(buf, format="JPEG", quality=q, dpi=dpi,
+                       subsampling=0, optimize=True)
             data = buf.getvalue()
             size_kb = len(data) / 1024
             if size_kb <= max_kb:
                 logger.info(f"High quality compress: q={q} => {size_kb:.1f}KB (min_kb=0)")
                 return data, q, ""
         buf = BytesIO()
-        image.save(buf, format="JPEG", quality=1, dpi=dpi)
+        image.save(buf, format="JPEG", quality=1, dpi=dpi,
+                   subsampling=0, optimize=True)
         data = buf.getvalue()
         size_kb = len(data) / 1024
         return data, 1, f"Even quality=1 exceeds max {max_kb}KB: {size_kb:.1f}KB"
@@ -59,7 +66,8 @@ def binary_compress(
     while low <= high:
         mid = (low + high) // 2
         buf = BytesIO()
-        image.save(buf, format="JPEG", quality=mid, dpi=dpi)
+        image.save(buf, format="JPEG", quality=mid, dpi=dpi,
+                   subsampling=0, optimize=True)
         data = buf.getvalue()
         size_kb = len(data) / 1024
 
@@ -81,7 +89,8 @@ def binary_compress(
 
     # 极端情况：quality=1 都超过 max_kb → 返回体积最小的 q=1 结果
     buf = BytesIO()
-    image.save(buf, format="JPEG", quality=1, dpi=dpi)
+    image.save(buf, format="JPEG", quality=1, dpi=dpi,
+               subsampling=0, optimize=True)
     data = buf.getvalue()
     size_kb = len(data) / 1024
     return data, 1, f"Even quality=1 exceeds max {max_kb}KB: {size_kb:.1f}KB"

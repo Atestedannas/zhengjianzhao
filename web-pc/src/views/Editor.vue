@@ -263,6 +263,16 @@
               <el-checkbox v-model="photoStore.beautifyOptions.blemish">
                 去除临时痘印/红肿（保留痣与面部特征）
               </el-checkbox>
+              <el-checkbox
+                v-model="artisticOn"
+                :disabled="photoStore.idPhotoAlign"
+              >
+                艺术增强（磨皮 + 通透 + 眼神光，仅非证件照）
+              </el-checkbox>
+              <p v-if="artisticOn" class="compliance-note">
+                艺术档不受证件照合规红线约束，只用于写真/社交图片；
+                证件照报名请保持关闭（证件照对齐开启时本项自动禁用）。
+              </p>
               <p class="compliance-note">
                 已锁定：瘦脸 / 大眼 / 改眼距 / 改鼻翼 / 改下颌角 — 全部禁止。
               </p>
@@ -392,13 +402,25 @@ const compareRatio = ref(50)
 
 /**
  * 「自然微调」总开关。
- * 后端只接受数值档位（0=关闭，1=自然微调），这里做布尔 ↔ 数值的双向映射，
+ * 后端只接受数值档位（0=关闭，1=自然微调，4=艺术档），这里做布尔 ↔ 数值的双向映射，
  * 保证 UI 上只有一个开关，避免用户选到被红线钳制的 2/3 档。
  */
 const beautifyOn = computed({
   get: () => photoStore.beautifyLevel > 0,
   set: (on: boolean) => {
-    photoStore.beautifyLevel = on ? 1 : 0
+    photoStore.beautifyLevel = on ? (photoStore.beautifyLevel === 4 ? 4 : 1) : 0
+  },
+})
+
+/**
+ * 「艺术增强」档（后端 ARTISTIC=4）：仅非证件照流程可用。
+ * 证件照对齐模式开启时该选项禁用，防止把不受红线约束的档位用在报名照片上；
+ * 关闭总开关会回落到自然微调（1），重新勾选即回到艺术档。
+ */
+const artisticOn = computed({
+  get: () => photoStore.beautifyLevel === 4,
+  set: (on: boolean) => {
+    photoStore.beautifyLevel = on ? 4 : 1
   },
 })
 

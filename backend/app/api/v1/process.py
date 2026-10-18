@@ -65,6 +65,7 @@ async def process_photo(
     beautify_smooth: bool = Form(True),
     beautify_brighten: bool = Form(True),
     beautify_blemish: bool = Form(True),
+    beautify_adaptive: bool = Form(True),
     # === 证件照 ===
     id_photo_align: bool = Form(False),
     gender: str = Form(None),
@@ -130,8 +131,9 @@ async def process_photo(
         pass
 
     # === 参数范围校验（非法参数返回明确业务错误，而非裸 500） ===
-    if not (0 <= beautify_level <= 3):
-        raise HTTPException(status_code=400, detail=f"beautify_level 必须在 0-3 之间，当前: {beautify_level}")
+    if not (0 <= beautify_level <= 4):
+        raise HTTPException(status_code=400,
+                            detail=f"beautify_level 必须在 0-4 之间（4=艺术档，仅非证件照流程），当前: {beautify_level}")
     if width != 0 and not (1 <= width <= 8000):
         raise HTTPException(status_code=400, detail=f"width 必须在 1-8000 之间，当前: {width}")
     if height != 0 and not (1 <= height <= 8000):
@@ -186,6 +188,7 @@ async def process_photo(
         beautify_smooth=beautify_smooth,
         beautify_brighten=beautify_brighten,
         beautify_blemish=beautify_blemish,
+        beautify_adaptive=beautify_adaptive,
         id_photo_align=id_photo_align,
         gender=gender if gender and gender != "None" else None,
     )

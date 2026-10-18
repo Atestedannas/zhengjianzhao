@@ -1,4 +1,4 @@
-"""图像处理流水线编排：crop → beautify → upscale sharpen → dpi → background → compress."""
+"""图像处理流水线编排：crop → beautify → upscale sharpen → background → output sharpen → dpi → compress."""
 
 import time
 from dataclasses import dataclass, field
@@ -35,11 +35,12 @@ class ProcessParams:
     bg_color: str = "white"
     output_format: str = "JPEG"
 
-    # === 美颜（证件照只允许「自然微调」COMPLIANT 档）===
-    beautify_level: int = BeautyLevel.COMPLIANT  # 0=OFF, 1=自然微调, 2/3=内部测试
+    # === 美颜（证件照只允许「自然微调」COMPLIANT 档；艺术档仅非证件流程）===
+    beautify_level: int = BeautyLevel.COMPLIANT  # 0=OFF, 1=自然微调, 2/3=内部测试, 4=艺术档(非证件)
     beautify_smooth: bool = True
     beautify_brighten: bool = True
     beautify_blemish: bool = True
+    beautify_adaptive: bool = True   # ⑤ 按肤质/曝光/清晰度/人脸占比自适应缩放强度
 
     # === 证件照对齐 ===
     id_photo_align: bool = False   # 是否启用证件照人脸对齐
@@ -117,9 +118,12 @@ def _upscale_sharpen(image: Image.Image, target_w: int, target_h: int,
     高频能量的损失只有 2~3%），而是放大插值本身造成的。
 
     【做法】按放大倍数给一层 UnsharpMask：1.0~1.5 倍轻度、1.5~2.0 倍加强，
-            ≥2 倍封顶（再锐化也是无米之炊，反而出振铃）。缩小（<1.0）不锐化。
+            ≥2 倍封顶（再锐化也是无米之炊，反而出振铃）。缩小（<1.0）不锐化
+            （缩小路径的锐度补偿由 _output_sharpen 在换底之后统一做）。
     【实测】真实用户原图 A/B：放大 1.3x 时高频能量 +32%、局部对比度 +8%；
             等尺寸时高频 +16%、局部对比度 +10%。观感从"假面"回到"肌肤"。
+    【threshold=0】阈值会把 ≤N 级的微观对比直接跳过（旧值 2 正好卡掉毛孔级
+            起伏），是「放大后塑料感」的来源之一；皮肤锐化阈值必须为 0。
     """
     # 没有 resize 前的尺寸就无法判断是否放大，安全起见不锐化
     if not pre_resize_size:
@@ -129,13 +133,51 @@ def _upscale_sharpen(image: Image.Image, target_w: int, target_h: int,
     if zoom <= 1.02:
         return image
 
-    # 幂函数：1.5x → 约 45%，2x → 约 80%，封顶 90%
-    amount = min(0.90, 0.55 * (zoom - 1.0) ** 0.7 + 0.18)
-    radius = 1.6 if zoom < 1.6 else 2.0
-    out = image.filter(ImageFilter.UnsharpMask(radius=radius, percent=int(amount * 100), threshold=2))
+    # 幂函数：1.3x → 约 59%，1.5x → 约 72%，2x → 封顶 95%
+    amount = min(0.95, 0.70 * (zoom - 1.0) ** 0.6 + 0.25)
+    radius = 1.2 if zoom < 1.5 else 1.8
+    out = image.filter(ImageFilter.UnsharpMask(radius=radius, percent=int(amount * 100), threshold=0))
     w, h = image.size
     logger.info(f"Upscale sharpen: {base_w}x{base_h} -> {w}x{h} (zoom {zoom:.2f}) amount={amount:.2f}")
     return out
+
+
+def _output_sharpen(image: Image.Image, target_w: int, target_h: int,
+                    pre_resize_size: Optional[Tuple[int, int]] = None) -> Image.Image:
+    """输出锐化：缩小/换底之后补偿锐度（对应 PS 修图流程的最后一步「输出锐化」）.
+
+    【背景】_upscale_sharpen 只覆盖放大路径（zoom>1.02）；而证件照主路径是
+    高清原图缩到 295×413 这类小规格 —— LANCZOS 缩图 + 抠图换底的发丝羽化
+    都会让画面系统性偏软，这是「美颜后发糊」的最大单一来源。PS 流程里
+    「输出锐化」永远是最后一步，这里在换底之后、编码之前补上同一环节。
+
+    【做法】只锐化 LAB 的 L 通道（避免饱和边缘产生色边），UnsharpMask 半径
+            随输出尺寸取 0.7~1.0px、幅度 60%、threshold=0（不跳过毛孔级
+            微观对比）。仅当确实发生了缩小（zoom<0.98）才执行：
+              * zoom>1.02 → 放大路径，已由 _upscale_sharpen 处理（互斥不叠加）；
+              * zoom≈1   → 没有发生插值，没有软化，不锐化。
+    """
+    if not pre_resize_size:
+        return image
+    base_w, base_h = pre_resize_size
+    zoom = max(target_w / base_w, target_h / base_h)
+    if zoom > 1.02 or zoom >= 0.98:
+        return image
+
+    import cv2
+    import numpy as np
+
+    w, h = image.size
+    bgr = np.ascontiguousarray(np.array(image.convert("RGB"))[:, :, ::-1])
+    lab = cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB)
+    l_chan = lab[:, :, 0].astype(np.float32)
+    radius = 0.7 if min(w, h) <= 600 else 1.0
+    blur = cv2.GaussianBlur(l_chan, (0, 0), radius)
+    lab[:, :, 0] = np.clip(l_chan + (l_chan - blur) * 0.60, 0.0, 255.0).astype(np.uint8)
+    out = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+    logger.info(f"Output sharpen: zoom={zoom:.2f} radius={radius} "
+                f"(downscale/bg-soften compensation)")
+    return Image.fromarray(np.ascontiguousarray(out[:, :, ::-1]))
 
 
 def process_image(
@@ -150,6 +192,7 @@ def process_image(
     Step 3.5: 放大补偿锐化（仅放大时）
     Step 4: dpi — 设置 DPI
     Step 5: background — AI 抠图换底
+    Step 5.5: output sharpen — 输出锐化（缩小/换底后补偿锐度，仅缩图路径）
     Step 6: compress — 压缩到目标大小
     Step 7: format — 格式转换（JPEG/PNG/PDF 等）
 
@@ -173,7 +216,17 @@ def process_image(
     # （iod 仅 50px）半径被压到 3~4px 几乎不起作用；放到目标分辨率上执行，
     # 半径与最终输出匹配，且省掉"先磨皮再放大"的二次插值损失。
     pre_resize_size = image.size
-    if params.width > 0 and params.height > 0:
+    # 「按宽度 / 按高度」只需要一个维度：单独给出时应仍然生效，
+    # 否则前端选「按宽度」只填宽度时会被静默跳过（输出原尺寸）。
+    has_both_dims = params.width > 0 and params.height > 0
+    single_axis_mode = None
+    if not has_both_dims:
+        if params.resize_mode == "by_width" and params.width > 0:
+            single_axis_mode = ResizeMode.BY_WIDTH
+        elif params.resize_mode == "by_height" and params.height > 0:
+            single_axis_mode = ResizeMode.BY_HEIGHT
+
+    if has_both_dims:
         if params.id_photo_align and faces_count > 0:
             # 证件照人脸对齐模式
             try:
@@ -203,10 +256,21 @@ def process_image(
             }
             mode = mode_map.get(params.resize_mode, ResizeMode.EXACT)
             image = resize_image(image, params.width, params.height, mode=mode, upscale=params.upscale)
+    elif single_axis_mode is not None:
+        # 单维度等比缩放：未给出的那一维传 0，resize_image 会按原图比例算出。
+        image = resize_image(
+            image,
+            params.width if single_axis_mode is ResizeMode.BY_WIDTH else 0,
+            params.height if single_axis_mode is ResizeMode.BY_HEIGHT else 0,
+            mode=single_axis_mode,
+            upscale=params.upscale,
+        )
     else:
         warnings.append("Skipped resize: target width/height is 0")
 
     # Step 3: 美颜处理（在目标分辨率上执行）
+    # 艺术档（4）是非证件照流程的强效档：显式关闭合规红线钳制；
+    # 其余档位（含误传的 2/3）仍默认 compliant=True 走红线钳制。
     if params.beautify_level > BeautyLevel.OFF:
         try:
             image = apply_beautify(
@@ -215,6 +279,8 @@ def process_image(
                 smooth=params.beautify_smooth,
                 brighten=params.beautify_brighten,
                 blemish=params.beautify_blemish,
+                adaptive=params.beautify_adaptive,
+                compliant=(params.beautify_level != BeautyLevel.ARTISTIC),
             )
         except Exception as e:
             warnings.append(f"Beautify failed: {e}")
@@ -232,6 +298,11 @@ def process_image(
         except Exception as e:
             warnings.append(f"AI抠图失败(2004)，保留原背景: {e}")
             logger.warning(f"Background replacement failed, keeping original: {e}")
+
+    # Step 5.5: 输出锐化 —— 缩图与换底羽化都会软化画面；PS 流程的「输出锐化」
+    # 必须放在所有软化环节之后、DPI/编码之前。与放大路径互斥（不叠加锐化）。
+    if params.width > 0 and params.height > 0:
+        image = _output_sharpen(image, params.width, params.height, pre_resize_size)
 
     # Step 6: DPI 设置
     # 【顺序】必须在抠图/锐化之后、压缩之前：前面的步骤都返回新 Image 对象，
