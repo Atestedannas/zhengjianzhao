@@ -1,5 +1,6 @@
 """尺寸调整模块：精确像素缩放 + 保持比例 + 多种缩放策略."""
 
+import math
 from enum import Enum
 from typing import Tuple, Optional
 
@@ -52,14 +53,17 @@ def _resize_fill(image: Image.Image, target_w: int, target_h: int) -> Image.Imag
     img_w, img_h = image.size
     ratio = max(target_w / img_w, target_h / img_h)
 
-    new_w = int(img_w * ratio)
-    new_h = int(img_h * ratio)
+    # 【黑边修复】int() 截断会让缩放后比目标少 1px（如 12x23 → 50x99 时
+    # new_h=98），居中裁剪偏移变成 -1，crop 到画布外就补黑边（已复现）。
+    # 向上取整 + 保证不小于目标 + 偏移钳制到 >=0，三重保险。
+    new_w = max(target_w, math.ceil(img_w * ratio))
+    new_h = max(target_h, math.ceil(img_h * ratio))
 
     resized = image.resize((new_w, new_h), Image.LANCZOS)
 
     # 居中裁剪
-    offset_x = (new_w - target_w) // 2
-    offset_y = (new_h - target_h) // 2
+    offset_x = max(0, (new_w - target_w) // 2)
+    offset_y = max(0, (new_h - target_h) // 2)
     result = resized.crop((offset_x, offset_y, offset_x + target_w, offset_y + target_h))
 
     logger.debug(f"Fill resize: {img_w}x{img_h} -> {new_w}x{new_h} -> crop {target_w}x{target_h}")

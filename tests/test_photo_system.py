@@ -62,7 +62,7 @@ class PhotoSystemTester:
         try:
             resp = self.session.post(
                 f"{SERVER_URL}{API_PREFIX}/admin/login",
-                params={"username": ADMIN_USERNAME, "password": ADMIN_PASSWORD},
+                json={"username": ADMIN_USERNAME, "password": ADMIN_PASSWORD},
                 timeout=15,
             )
             data = resp.json()
@@ -180,6 +180,29 @@ class PhotoSystemTester:
         except requests.RequestException as e:
             print(f"  [WARN] 下载异常: {e}")
             return None
+
+    def wait_for_completion(self, record_id: int, timeout: int = 120) -> bool:
+        """轮询等待处理完成."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                resp = self.session.get(
+                    f"{SERVER_URL}{API_PREFIX}/process/{record_id}/status",
+                    timeout=15,
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    status = data.get("data", {}).get("status", data.get("status", ""))
+                    if status in ("completed", "success"):
+                        return True
+                    if status == "failed":
+                        print(f"  [ERROR] 处理失败: {data}")
+                        return False
+            except requests.RequestException:
+                pass
+            time.sleep(2)
+        print(f"  [ERROR] 等待处理完成超时 ({timeout}s)")
+        return False
 
     # ======================== 图像分析 ========================
     def analyze_background(self, image_bytes: bytes) -> dict:
@@ -353,6 +376,8 @@ class PhotoSystemTester:
             }
 
         record_id = result["data"]["record_id"]
+        if not self.wait_for_completion(record_id):
+            return {"test": "换背景(无美颜)", "status": "FAIL", "details": {"error": "处理未完成"}}
         img_data = self.download_result(record_id)
         if img_data is None:
             return {"test": "换背景(无美颜)", "status": "FAIL", "details": {"error": "无法下载结果"}}
@@ -395,6 +420,8 @@ class PhotoSystemTester:
             }
 
         record_id = result["data"]["record_id"]
+        if not self.wait_for_completion(record_id):
+            return {"test": "单独美颜", "status": "FAIL", "details": {"error": "处理未完成"}}
         img_data = self.download_result(record_id)
         if img_data is None:
             return {"test": "单独美颜", "status": "FAIL", "details": {"error": "无法下载结果"}}
@@ -455,6 +482,8 @@ class PhotoSystemTester:
             }
 
         record_id = result["data"]["record_id"]
+        if not self.wait_for_completion(record_id):
+            return {"test": "换背景+美颜组合", "status": "FAIL", "details": {"error": "处理未完成"}}
         img_data = self.download_result(record_id)
         if img_data is None:
             return {"test": "换背景+美颜组合", "status": "FAIL", "details": {"error": "无法下载结果"}}

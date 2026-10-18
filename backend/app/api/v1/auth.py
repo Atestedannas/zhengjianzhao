@@ -21,14 +21,15 @@ from app.core.security import (
 from app.core.pricing_config import get_register_bonus
 from app.models.user import User
 from app.schemas.user import (
-    WechatLoginRequest, WebLoginCallbackRequest as WebLoginRequest,
+    WechatLoginRequest, WebLoginCallbackRequest,
     TokenResponse, RefreshTokenRequest as RefreshRequest,
 )
 from app.schemas.common import ResponseModel
 from pydantic import BaseModel
 
 
-class WebLoginRequest(BaseModel):
+class WebPasswordLoginRequest(BaseModel):
+    """Web 端口令登录（与扫码回调是两个不同的请求体）."""
     password: str
 
 router = APIRouter()
@@ -125,7 +126,7 @@ async def _alipay_call(method: str, response_key: str, **extra) -> dict:
 
 @router.post("/web-login", response_model=ResponseModel)
 async def web_password_login(
-    req: WebLoginRequest,
+    req: WebPasswordLoginRequest,
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -282,7 +283,7 @@ async def wechat_web_qrcode():
 
 
 @router.post("/wechat-web-callback", response_model=ResponseModel)
-async def wechat_web_callback(req: WebLoginRequest, db: AsyncSession = Depends(get_db)):
+async def wechat_web_callback(req: WebLoginCallbackRequest, db: AsyncSession = Depends(get_db)):
     """微信 Web 扫码回调."""
     # 校验 state
     await _consume_state(req.state)
@@ -397,7 +398,7 @@ async def alipay_web_qrcode():
 
 
 @router.post("/alipay-web-callback", response_model=ResponseModel)
-async def alipay_web_callback(req: WebLoginRequest, db: AsyncSession = Depends(get_db)):
+async def alipay_web_callback(req: WebLoginCallbackRequest, db: AsyncSession = Depends(get_db)):
     """支付宝 Web 扫码回调."""
     await _consume_state(req.state)
 

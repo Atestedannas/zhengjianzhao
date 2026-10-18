@@ -177,7 +177,10 @@ async def query_payment(
     current_user: User = Depends(get_current_user),
 ):
     """查询订单支付状态."""
-    result = await db.execute(select(Order).where(Order.order_no == order_no))
+    # 必须带 user_id：否则任何登录用户都能用 order_no 遍历别人的订单（IDOR）
+    result = await db.execute(
+        select(Order).where(Order.order_no == order_no, Order.user_id == current_user.id)
+    )
     order = result.scalar()
     if order is None:
         raise HTTPException(status_code=404, detail="Order not found.")

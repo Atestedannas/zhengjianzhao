@@ -172,4 +172,4 @@ if __name__ == "__main__":
     ):
         print(f"[{fn.__name__}]")
         fn()
-    print("\n全部通过 ✅")
+    print("\n全部通过 [OK]")

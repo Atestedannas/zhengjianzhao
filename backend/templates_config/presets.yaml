@@ -7,8 +7,8 @@ templates:
     max_kb: 100
     allowed_bg_colors: ["blue", "white"]
     output_format: "JPEG"
-    physical_size_mm: "35×45mm"
-    remark: "适用教师考编报名"
+    physical_size_mm: "35×49mm"
+    remark: "适用教师考编报名（413×579 为二寸，35×49mm@300dpi）"
     is_active: true
 
   - name: "征兵照片"
@@ -32,6 +32,18 @@ templates:
     output_format: "JPEG"
     physical_size_mm: "25×35mm"
     remark: "公务员/事业编报考"
+    is_active: true
+
+  - name: "教师资格证（300×400）"
+    width_px: 300
+    height_px: 400
+    dpi: 300
+    min_kb: 0
+    max_kb: 200
+    allowed_bg_colors: ["white", "blue"]
+    output_format: "JPEG"
+    physical_size_mm: "25×34mm"
+    remark: "部分省份教师资格证/教师招聘报名要求 宽300×高400"
     is_active: true
 
   - name: "通用扫描件"
