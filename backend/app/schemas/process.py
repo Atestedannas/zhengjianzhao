@@ -59,6 +59,7 @@ class ProcessRequest(BaseModel):
     beautify_brighten: bool = Field(True, description="是否启用提亮")
     beautify_blemish: bool = Field(True, description="是否启用去瑕疵（分区 + 结构保护）")
     beautify_adaptive: bool = Field(True, description="是否启用自适应强度（按肤质/曝光/清晰度/人脸占比）")
+    retouch_strength: float = Field(1.0, ge=0.0, le=1.0, description="还原度滑杆: 1=完整档位强度(默认), 0.7=轻修(推荐), 0=完全还原原图")
     id_photo_align: bool = Field(False, description="是否启用证件照人脸对齐")
     gender: Optional[str] = Field(None, description="性别: male|female")
     template_id: Optional[int] = Field(None, description="模板 ID")

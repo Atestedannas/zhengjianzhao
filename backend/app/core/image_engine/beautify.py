@@ -109,42 +109,47 @@ class _Params:
     sharpen: float     # 眼部锐化强度
 
 
-# ---- 证件照美颜红线（PRD 强制上限，任何档位都不得突破）----
-COMPLIANT_MAX_SMOOTH = 0.20     # 磨皮力度硬上限 ≤ 20%
-COMPLIANT_MAX_BLEMISH = 0.20    # 仅去临时性痘印/红肿，保留痣与特征
-COMPLIANT_MAX_CHROMA = 0.35     # 肤色均匀化（仅提亮匀肤，不改色相；配合蒙版加权平滑防边缘渗色）
-COMPLIANT_MAX_BRIGHTEN = 0.15   # 提亮 ≤ 15%
-COMPLIANT_MIN_FINE_KEEP = 0.85  # 原生纹理保留 ≥ 85%（禁止涂抹感）
-COMPLIANT_MAX_SHINE = 0.12      # 去油光仅压镜面高光
-COMPLIANT_MAX_CLARITY = 0.10    # 通透感回填（原 0.06 几乎不可见，提到 PS clarity 低档位）
-COMPLIANT_MAX_SHARPEN = 0.08    # 眼神光级微锐化，禁止改变五官立体光影
+# ---- 证件照美颜红线（「修饰瑕疵，保留真实」口径，任何档位都不得突破）----
+# 【2026-10 二次收紧】用户实测反馈：默认档仍有塑料感/光影被抬平。证件照的
+# 第一原则是「越像本人越好」：磨皮只去临时瑕疵，毛孔与光影必须留在原片。
+COMPLIANT_MAX_SMOOTH = 0.12     # 磨皮力度硬上限 ≤ 12%
+COMPLIANT_MAX_BLEMISH = 0.18    # 仅去临时性痘印/红肿，保留痣与特征
+COMPLIANT_MAX_CHROMA = 0.18     # 肤色均匀化上限大幅下调（0.30 会把血色匀成苍白）
+COMPLIANT_MAX_BRIGHTEN = 0.10   # 提亮 ≤ 10%（保留面部自然明暗，不做「打光板」）
+COMPLIANT_MIN_FINE_KEEP = 0.90  # 原生纹理（毛孔）保留 ≥ 90%（禁止涂抹感）
+COMPLIANT_MAX_SHINE = 0.10      # 去油光仅压镜面高光
+COMPLIANT_MAX_CLARITY = 0.10    # 通透感回填（立体感的主要来源，保持不变）
+COMPLIANT_MAX_SHARPEN = 0.06    # 眼神光级微锐化，禁止改变五官立体光影
 
-# 【两条红线互相约束】磨皮 ≤20% 与纹理保留 ≥85% 不能同时取满：
-# 20% 的压制只剩 80% 纹理，已经越过「保留 ≥85%」。因此**实际生效上限是 15%**
+# 【两条红线互相约束】磨皮 ≤12% 与纹理保留 ≥90% 不能同时取满：
+# 12% 的压制只剩 88% 纹理，已经越过「保留 ≥90%」。因此**实际生效上限是 10%**
 # （= 1 - COMPLIANT_MIN_FINE_KEEP），COMPLIANT_MAX_SMOOTH 只是不可越过的硬顶。
-# 出图档的 smooth 参数据此从 0.18 下调为 0.15，自适应强度再在 [0.09, 0.15] 内浮动。
-COMPLIANT_MAX_FINE_REMOVE = 1.0 - COMPLIANT_MIN_FINE_KEEP   # = 0.15
+# 出图档的 smooth 参数取 0.08（约 8% 磨皮），自适应强度再向下浮动。
+COMPLIANT_MAX_FINE_REMOVE = 1.0 - COMPLIANT_MIN_FINE_KEEP   # = 0.10
 
 # ---- 局部美化预算（③ 唇色/牙齿、④ 眼神光）----
 # 【单位教训】LAB 的 a/b/L 都是 0~255 尺度（1 单位 ≈ 1 个 CIELAB 单位），
 # 用 COMPLIANT_MAX_CHROMA(=0.15) 去乘通道值只会产生 0.1 级改动 —— 肉眼不可见。
 # 局部美化必须用「通道单位」给预算，并单独列在这里。
-COMPLIANT_MAX_LIP_A = 6.0       # 唇色红润度提升上限（a 通道，≈ +6 a*）
-COMPLIANT_MAX_LIP_B = 3.0       # 唇色减黄上限（b 通道，≈ -3 b*）
+COMPLIANT_MAX_LIP_A = 4.0       # 唇色红润度提升上限（a 通道，≈ +4 a*；只补气色不改唇色）
+COMPLIANT_MAX_LIP_B = 2.0       # 唇色减黄上限（b 通道，≈ -2 b*）
 COMPLIANT_MAX_TEETH_DESAT = 0.45   # 牙齿去黄/去饱和比例（相对值）
 COMPLIANT_MAX_TEETH_L = 8.0        # 牙齿提亮上限（L 级）
-EYE_CATCHLIGHT_LIFT = 4.0       # 眼神光：仅对眼区最亮的镜面反光轻微提亮（L 级）
-_BRIGHTEN_GAIN = 0.35           # 提亮主项：brighten(≤0.15) × 余量 × 该系数 → 暗部峰值约 +13 级
-                                # （0.22 时只有 +6 级，被 8bit 观感阈值淹没。增益本身不受
-                                #  _clamp_compliant 钳制，红线口径仍是 brighten 参数 ≤0.15）
+EYE_CATCHLIGHT_LIFT = 3.0       # 眼神光：仅对眼区最亮的镜面反光轻微提亮（L 级）
+_BRIGHTEN_GAIN = 0.22           # 提亮主项：brighten(≤0.10) × 余量 × 该系数 → 暗部峰值约 +6 级
+                                # （0.35 时 +13 级会把阴影抬平 → 光影扁平化的直接原因。
+                                #  增益不受 _clamp_compliant 钳制，红线口径是 brighten 参数 ≤0.10）
 
 _PARAMS = {
-    # ★ 自然微调（默认出图档）：全部落在红线之内
-    # smooth=0.15：直接取「纹理保留 ≥85%」推出来的实际生效上限，见上方说明；
-    # chroma=0.30 / clarity=0.10：随红线放宽（0.35 / 0.10）同步上调，匀肤与通透
-    #   在 0.15 / 0.06 下被量化噪声淹没，观感等于没做；
-    # sharpen=0.08：取满红线（④ 眼神光），boost 权已归一到 ≤1，峰值不会越界。
-    BeautyLevel.COMPLIANT: _Params(0.15, 0.85, 0.20, 0.30, 0.12, 0.15, 0.97, 0.10, 0.08),
+    # ★ 自然微调（默认出图档）：全部落在红线之内，且明显低于上限 ——
+    #   「这个人今天睡得很好、皮肤很干净、很精神」，而不是「去整容了」。
+    # smooth=0.08：约 8% 高频压制（毛孔保留 ≥92%），配合 r_fine 缩到 0.032×iod，
+    #   毛孔级纹理（1~2px）几乎原样保留；
+    # chroma=0.12：只去明显红斑，保留血色与肤色起伏（0.30 会匀成苍白面具）；
+    # brighten=0.08 × 增益 0.22：暗部峰值约 +5 级，提神但不抬平阴影；
+    # clarity=0.10：立体感的主要来源，保持 PS clarity 低档位；
+    # sharpen=0.05：眼神光克制版，避免睫毛白边。
+    BeautyLevel.COMPLIANT: _Params(0.08, 0.90, 0.15, 0.12, 0.08, 0.08, 0.99, 0.10, 0.05),
     # 内部对比测试档（会被 _clamp_compliant 压回上限，仅用于美学回归测试）
     BeautyLevel.MEDIUM:    _Params(0.78, 0.44, 0.68, 0.62, 0.55, 0.46, 0.85, 0.13, 0.22),
     BeautyLevel.HIGH:      _Params(0.92, 0.30, 0.85, 0.78, 0.72, 0.60, 0.78, 0.18, 0.30),
@@ -152,8 +157,8 @@ _PARAMS = {
     # 误传 compliant=True 时会被 _clamp_compliant 压回红线，等价自然微调）：
     # 不改骨相/五官几何，只在肤色、光影、通透与锐度上向「PS 中等修图」靠拢，
     # 纹理保留 ≥80% 仍由 fine_keep 下限保证。各轴必须**严格强于** COMPLIANT
-    # （合规档 chroma/clarity 上调到 0.30/0.10 后，艺术档相应抬到 0.40/0.14）。
-    BeautyLevel.ARTISTIC:  _Params(0.25, 0.80, 0.30, 0.40, 0.18, 0.20, 0.94, 0.14, 0.12),
+    # （合规档下调到 0.08/0.12 后，艺术档相应取 0.20/0.22）。
+    BeautyLevel.ARTISTIC:  _Params(0.20, 0.88, 0.25, 0.22, 0.14, 0.12, 0.96, 0.12, 0.08),
 }
 
 
@@ -181,7 +186,8 @@ def _clamp_compliant(para: _Params) -> _Params:
 
 # 引导滤波的方差阈值（guide 取值 0~255，阈值 ≈ (可平滑的亮度差 std)^2）
 _EPS_FINE = 90.0     # ≈ std 9.5，小于它的起伏（毛孔/噪点）会被抹平
-_EPS_MID = 320.0     # ≈ std 17.9，保留面部明暗结构
+_EPS_MID = 520.0     # ≈ std 22.8（原 320）：阈值越大越保留鼻影/颧骨等中频明暗，
+                     # 光影立体感直接由此决定；磨皮只压斑点半径内的起伏
 _EPS_CLARITY = 500.0
 
 # ---- ① 磨皮基底算子 ----
@@ -1027,7 +1033,7 @@ def _adaptive_params(para: _Params, bgr: np.ndarray, mask: np.ndarray,
     # 【为什么要夹下限】三个系数连乘最坏只有 0.72*0.70*0.78 ≈ 0.39，
     # 会把「自然微调」压成肉眼不可见（实测暗图/糊图/小脸时磨皮只剩 9%）。
     # 这里按轴分别夹到有意义的区间：
-    #   smooth ≥0.80、blemish ≥0.80 → 出图档实际落在 12%~15% 磨皮、16%~20% 去瑕疵；
+    #   smooth ≥0.80、blemish ≥0.80 → 出图档实际落在 6%~8% 磨皮、12%~15% 去瑕疵；
     #   chroma 允许到 1.15（红斑多的照片更需要匀肤），上限仍由红线钳制。
     skin_scale = min(1.0, max(0.80, tex_scale * sharp_scale * face_scale))
     blemish_scale = min(1.0, max(0.80, tex_scale * face_scale))
@@ -1136,8 +1142,11 @@ def _retouch(bgr: np.ndarray, mask: np.ndarray, geo: _FaceGeometry, para: _Param
     a_chan = lab[:, :, 1].astype(np.float32) - 128.0
     b_chan = lab[:, :, 2].astype(np.float32) - 128.0
 
-    r_fine = _scale(geo.iod, 0.075, 2)
-    r_mid = max(r_fine + 2, _scale(geo.iod, 0.22, 4))
+    # 【半径即真实感】r_fine 曾是 0.075×iod（iod≈93px 时 ≈7px）——而毛孔只有
+    # 1~2px，7px 半径的表面模糊会把毛孔连同噪点一起吃掉（塑料面具感的直接原因）。
+    # 收紧到 0.032×iod（≈3px）：只抹平单像素噪点，毛孔与皮肤纹理原样保留。
+    r_fine = _scale(geo.iod, 0.032, 2)
+    r_mid = max(r_fine + 2, _scale(geo.iod, 0.16, 4))
 
     # ① 磨皮基底：
     #   - 细频基底 base_fine：表面模糊（保边、保留体积感），可切回引导滤波 A/B；
@@ -1218,7 +1227,9 @@ def _retouch(bgr: np.ndarray, mask: np.ndarray, geo: _FaceGeometry, para: _Param
     # 裸 blur 会把发际线/下颌缘过渡带里头发与背景的色度混进皮肤
     # （表现为边缘色晕、显脏）；加权版在过渡带只参考「属于皮肤」的像素。
     if chroma_w > 0.0:
-        r_chroma = _scale(geo.iod, 0.35, 4)
+        # 0.35×iod 的大半径会把整脸色度拉向同一个均值（苍白面具感）；
+        # 收到 0.22×iod：只匀邻近区域的色块，保留脸颊-唇周的自然色差。
+        r_chroma = _scale(geo.iod, 0.22, 4)
         m_soft = np.clip(_fast_blur(mask, r_chroma), 1e-2, 1.0)
         a_ref = np.clip(_fast_blur(a_chan * mask, r_chroma) / m_soft, -128.0, 127.0)
         b_ref = np.clip(_fast_blur(b_chan * mask, r_chroma) / m_soft, -128.0, 127.0)
@@ -1251,9 +1262,10 @@ def _retouch(bgr: np.ndarray, mask: np.ndarray, geo: _FaceGeometry, para: _Param
 
         def _eye_edit(l, a, b, m):
             detail = l - cv2.GaussianBlur(l, (0, 0), sigma)
-            # boost 归一到 [0,1] → 有效强度峰值 = para.sharpen ≤ 8%（红线）
-            # 阈值 2~10（原 3~12）：让更多中等幅度的睫毛/瞳孔边缘进入增强区
-            boost = _ramp(np.abs(detail), 2.0, 10.0)
+            # boost 归一到 [0,1] → 有效强度峰值 = para.sharpen ≤ 6%（红线）
+            # 阈值 3~12（回调自 2~10）：只增强瞳孔/睫毛的强边缘，中等幅度的
+            # 皮肤噪点不再进入增强区，避免「眼睛看着变大/睫毛拉丝」。
+            boost = _ramp(np.abs(detail), 3.0, 12.0)
             l = l + para.sharpen * boost * detail
             # 角膜反光/眼白高光轻微提亮（≤4 级）；阈值取眼区自身分位，
             # 不引入固定白点，也不碰瞳孔颜色。
@@ -1270,11 +1282,11 @@ def _retouch(bgr: np.ndarray, mask: np.ndarray, geo: _FaceGeometry, para: _Param
         a_ref = float(np.median(a_chan[sel_skin])) if int(sel_skin.sum()) > 200 else 12.0
 
         def _lip_edit(l, a, b, m):
-            # 【单位修正】用通道单位预算（≤ +6 a / −3 b）。旧写法把 15% 的比例
+            # 【单位修正】用通道单位预算（≤ +4 a / −2 b）。旧写法把 15% 的比例
             # 直接乘到通道值上，只有 +0.12 级 a，被量化噪声完全淹没。
-            # 基准是本图皮肤自身的红度：比皮肤红 8 级以内吃满预算，
-            # 红过 26 级的深唇色不再加红（越红越不动）。
-            need = 1.0 - _ramp(a - a_ref, 8.0, 26.0)
+            # 基准是本图皮肤自身的红度：比皮肤红 10 级以内吃满预算，
+            # 红过 30 级的深唇色不再加红（越红越不动）。
+            need = 1.0 - _ramp(a - a_ref, 10.0, 30.0)
             return l, a + need * COMPLIANT_MAX_LIP_A, b - need * COMPLIANT_MAX_LIP_B
 
         out = _local_lab_edit(out, lips_mask, _lip_edit)
@@ -1305,6 +1317,7 @@ def apply_beautify(
     compliant: bool = True,
     adaptive: bool = True,
     smooth_operator: str = SMOOTH_OPERATOR,
+    strength: float = 1.0,
 ) -> Image.Image:
     """
     对图片应用美颜处理（FaceLandmarker + 频率分离 + 表面模糊）.
@@ -1323,6 +1336,9 @@ def apply_beautify(
                    美学回归测试才应传 False。
         adaptive:  ★ 是否按肤质/曝光/清晰度/人脸占比自适应缩放强度（默认 True）
         smooth_operator: 磨皮基底算子，"surface"=表面模糊（默认）/"guided"=引导滤波
+        strength:  ★ 用户「还原度」滑杆（0~1，默认 1=完整档位）。只缩放减法类轴
+                   （磨皮/去瑕疵/匀肤/去油光/提亮/锐化），fine_keep 随之反向抬升；
+                   在红线钳制之后做纯减法，结果必然仍在红线内。0 = 完全还原原图。
 
     返回:
         PIL.Image 美颜后的图片；未检测到人脸时降级处理，
@@ -1339,8 +1355,24 @@ def apply_beautify(
     if compliant:
         para = _clamp_compliant(para)
         # 合规档允许眼部锐化：只增强眼睛/眉毛的对比度（眼神光），
-        # 不改变五官位置与比例，强度已被 _clamp_compliant 锁在 ≤0.08。
+        # 不改变五官位置与比例，强度已被 _clamp_compliant 锁在红线内。
         # 显式传 sharpen=False 才真正关闭。
+
+    # ⑥ 用户「还原度」滑杆：strength ∈ [0,1]。缩放在红线钳制之后只做减法
+    # （除 fine_keep 反向抬升外全是乘 s），结果必然仍在红线内。
+    s = min(1.0, max(0.0, float(strength)))
+    if s < 1.0:
+        para = _Params(
+            smooth=para.smooth * s,
+            fine_keep=1.0 - (1.0 - para.fine_keep) * s,
+            blemish=para.blemish * s,
+            chroma=para.chroma * s,
+            shine=para.shine * s,
+            brighten=para.brighten * s,
+            gamma=para.gamma,
+            clarity=para.clarity * s,
+            sharpen=para.sharpen * s,
+        )
 
     started = time.perf_counter()
     bgr = _pil_to_cv2(image)
@@ -1393,10 +1425,10 @@ def apply_beautify(
     logger.info(
         f"Beautify done: mode={mode} parse={'on' if parse_skin is not None else 'off'} "
         f"level={level} faces={len(faces)} "
-        f"r_fine={_scale(geo.iod, 0.075, 2)}px iod={geo.iod:.1f}px "
+        f"r_fine={_scale(geo.iod, 0.032, 2)}px iod={geo.iod:.1f}px "
         f"mask={float(mask.mean()):.3f} skin_diff={diff:.1f} "
         f"smooth={smooth} brighten={brighten} blemish={blemish} sharpen={sharpen} "
-        f"adaptive={adaptive} op={smooth_operator} "
+        f"adaptive={adaptive} strength={s:.2f} op={smooth_operator} "
         f"lips={'on' if lips_mask is not None else 'off'} "
         f"protect={'on' if structure_protect is not None else 'off'} "
         f"in {elapsed:.0f}ms"

@@ -122,9 +122,13 @@ export const usePhotoStore = defineStore('photo', () => {
 
   // 当前选中的参数
   const selectedTemplate = ref<number | null>(null)
-  const selectedBgColor = ref('white')
+  // 默认「保留原背景」（keep）：原图蓝底/白底本身合规，只在用户主动选择时才换底，
+  // 避免不必要的抠图白边与质感损失（用户实测反馈）
+  const selectedBgColor = ref('keep')
   // 0=关闭原图直出, 1=自然微调（证件照默认档，后端强制合规红线）, 4=艺术档（仅非证件照）
   const beautifyLevel = ref(1)
+  // 「还原度」滑杆：0~1，1=完整档位强度，0.7=轻修（默认，以真实为主），0=原图
+  const retouchStrength = ref(0.7)
   const beautifyOptions = ref({
     smooth: true,
     brighten: true,
@@ -196,6 +200,7 @@ export const usePhotoStore = defineStore('photo', () => {
     } catch {
       // 预设默认背景色
       bgColors.value = [
+        { name: 'keep', rgb: [-1, -1, -1] },
         { name: 'white', rgb: [255, 255, 255] },
         { name: 'blue', rgb: [43, 117, 217] },
         { name: 'red', rgb: [217, 43, 43] },
@@ -318,6 +323,7 @@ export const usePhotoStore = defineStore('photo', () => {
         beautify_smooth: beautifyOptions.value.smooth,
         beautify_brighten: beautifyOptions.value.brighten,
         beautify_blemish: beautifyOptions.value.blemish,
+        retouch_strength: retouchStrength.value,
         id_photo_align: idPhotoAlign.value,
         gender: gender.value || undefined,
       }
@@ -352,6 +358,7 @@ export const usePhotoStore = defineStore('photo', () => {
     selectedTemplate.value = null
     selectedBgColor.value = 'white'
     beautifyLevel.value = 1
+  retouchStrength.value = 0.7
     beautifyOptions.value = {
       smooth: true,
       brighten: true,
@@ -397,6 +404,7 @@ export const usePhotoStore = defineStore('photo', () => {
     selectedTemplate,
     selectedBgColor,
     beautifyLevel,
+    retouchStrength,
     beautifyOptions,
     idPhotoAlign,
     gender,

@@ -297,17 +297,18 @@ def _retouch_synth(adaptive=False):
 
 
 def test_skin_smoothing_reaches_redline():
-    """磨皮幅度必须真的落在「≤15% / 纹理保留 ≥85%」的红线口径内.
+    """磨皮幅度必须真的落在「≤12% / 纹理保留 ≥90%」的红线口径内.
 
     回归点：旧式 `1 - smooth_w*(1-keep)` 在 fine_keep=0.88 下最多只压掉 1.5%
-    高频，等于没磨皮。这里要求高频能量下降 ≥5% 且 ≤18%.
+    高频，等于没磨皮；反过来 2026-10 收紧后 smooth=0.08、r_fine=0.032×iod，
+    要求高频保留 ≥90%（磨皮可感知但不吃毛孔）且 ≤97%（仍要有净磨皮效果）.
     """
     bgr, out, lab_i, lab_o, mask, *_ = _retouch_synth()
     sel = mask > 0.5
     hf_i = float(np.sqrt(np.mean(cv2.Laplacian(lab_i[..., 0], cv2.CV_32F)[sel] ** 2)))
     hf_o = float(np.sqrt(np.mean(cv2.Laplacian(lab_o[..., 0], cv2.CV_32F)[sel] ** 2)))
     retain = hf_o / hf_i
-    assert 0.82 <= retain <= 0.95, f"磨皮幅度不在红窗口内: 纹理保留 {retain:.3f}"
+    assert 0.90 <= retain <= 0.97, f"磨皮幅度不在红窗口内: 纹理保留 {retain:.3f}"
     print(f"  [OK] skin smoothing: 高频保留 {retain:.3f}（磨掉 {100 * (1 - retain):.1f}%）")
 
 

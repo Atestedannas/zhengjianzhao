@@ -253,12 +253,23 @@
             </div>
 
             <div class="setting-group" v-if="beautifyOn">
-              <h4 class="setting-title">允许的微调项</h4>
+              <h4 class="setting-title">美颜强度（还原度）</h4>
+              <el-slider
+                v-model="strengthPercent"
+                :min="0"
+                :max="100"
+                :step="5"
+                :marks="{ 0: '原图', 70: '轻修', 100: '完整' }"
+              />
+              <p class="compliance-note">
+                当前强度 {{ strengthPercent }}%（默认 70% 轻修，以真实为主）；
+                0% = 完全还原原图，磨皮/提亮/匀肤都会按此比例减弱。
+              </p>
               <el-checkbox v-model="photoStore.beautifyOptions.smooth">
-                肤色均匀化（磨皮 ≤20%，保留毛孔纹理）
+                肤色均匀化（磨皮 ≤12%，保留毛孔纹理）
               </el-checkbox>
               <el-checkbox v-model="photoStore.beautifyOptions.brighten">
-                轻微提亮（≤15%，不改变五官立体光影）
+                轻微提亮（≤10%，保留面部自然明暗）
               </el-checkbox>
               <el-checkbox v-model="photoStore.beautifyOptions.blemish">
                 去除临时痘印/红肿（保留痣与面部特征）
@@ -267,7 +278,7 @@
                 v-model="artisticOn"
                 :disabled="photoStore.idPhotoAlign"
               >
-                艺术增强（磨皮 + 通透 + 眼神光，仅非证件照）
+                艺术增强（轻磨皮 + 通透 + 眼神光，仅非证件照）
               </el-checkbox>
               <p v-if="artisticOn" class="compliance-note">
                 艺术档不受证件照合规红线约束，只用于写真/社交图片；
@@ -424,6 +435,14 @@ const artisticOn = computed({
   },
 })
 
+/** 美颜强度滑杆（0~100%），映射到后端 retouch_strength 0~1 */
+const strengthPercent = computed({
+  get: () => Math.round(photoStore.retouchStrength * 100),
+  set: (v: number) => {
+    photoStore.retouchStrength = v / 100
+  },
+})
+
 const originalFileInfo = computed(() => {
   if (!photoStore.originalFile) return ''
   const sizeKB = (photoStore.originalFile.size / 1024).toFixed(1)
@@ -431,6 +450,7 @@ const originalFileInfo = computed(() => {
 })
 
 const colorLabels: Record<string, string> = {
+  keep: '保留原背景',
   white: '白色',
   blue: '蓝色',
   red: '红色',

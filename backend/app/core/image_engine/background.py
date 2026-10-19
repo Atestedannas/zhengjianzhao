@@ -25,7 +25,10 @@ from loguru import logger
 from app.config import settings
 
 # 标准证件照背景色映射（扩展版）
+# "keep" 不是颜色：pipeline 见到 keep 直接跳过换底（保留原背景）；
+# 放进 MAP 只是为了让 /bg-colors 接口把它下发到前端色板里。
 BG_COLOR_MAP = {
+    "keep":       (-1, -1, -1),      # 保留原背景（特殊值，pipeline 侧跳过换底）
     "white":      (255, 255, 255),   # 白色
     "blue":       (67, 142, 219),    # 标准蓝
     "red":        (213, 43, 30),     # 标准红

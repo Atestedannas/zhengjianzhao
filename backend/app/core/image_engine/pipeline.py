@@ -41,6 +41,7 @@ class ProcessParams:
     beautify_brighten: bool = True
     beautify_blemish: bool = True
     beautify_adaptive: bool = True   # ⑤ 按肤质/曝光/清晰度/人脸占比自适应缩放强度
+    retouch_strength: float = 1.0    # ⑥ 用户「还原度」滑杆 0~1（默认 1=完整档位，0=不修图）
 
     # === 证件照对齐 ===
     id_photo_align: bool = False   # 是否启用证件照人脸对齐
@@ -172,10 +173,13 @@ def _output_sharpen(image: Image.Image, target_w: int, target_h: int,
     lab = cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB)
     l_chan = lab[:, :, 0].astype(np.float32)
     radius = 0.7 if min(w, h) <= 600 else 1.0
+    # threshold=2：跳过 ≤2 级的微观起伏 —— 这些正是抠图羽化带的过渡像素与
+    # 压缩噪声，锐化它们只会把发丝边缘拉出白边/光晕（用户实测反馈）。
+    # 真实的毛发/衣领结构对比度远大于 2 级，锐化效果不受影响。
     blur = cv2.GaussianBlur(l_chan, (0, 0), radius)
-    lab[:, :, 0] = np.clip(l_chan + (l_chan - blur) * 0.60, 0.0, 255.0).astype(np.uint8)
+    lab[:, :, 0] = np.clip(l_chan + (l_chan - blur) * 0.55, 0.0, 255.0).astype(np.uint8)
     out = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
-    logger.info(f"Output sharpen: zoom={zoom:.2f} radius={radius} "
+    logger.info(f"Output sharpen: zoom={zoom:.2f} radius={radius} thr=2 "
                 f"(downscale/bg-soften compensation)")
     return Image.fromarray(np.ascontiguousarray(out[:, :, ::-1]))
 
@@ -281,6 +285,7 @@ def process_image(
                 blemish=params.beautify_blemish,
                 adaptive=params.beautify_adaptive,
                 compliant=(params.beautify_level != BeautyLevel.ARTISTIC),
+                strength=params.retouch_strength,
             )
         except Exception as e:
             warnings.append(f"Beautify failed: {e}")

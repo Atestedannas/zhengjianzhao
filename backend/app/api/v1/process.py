@@ -66,6 +66,7 @@ async def process_photo(
     beautify_brighten: bool = Form(True),
     beautify_blemish: bool = Form(True),
     beautify_adaptive: bool = Form(True),
+    retouch_strength: float = Form(1.0),
     # === 证件照 ===
     id_photo_align: bool = Form(False),
     gender: str = Form(None),
@@ -80,7 +81,8 @@ async def process_photo(
     - 尺寸调整: resize_mode 支持 crop/exact/fit/fill/by_width/by_height
     - 格式转换: 支持 JPEG/PNG/PDF/WEBP/BMP/TIFF
     - 美颜: beautify_level 0=OFF 1=自然微调(COMPLIANT, 默认) 2/3=内部测试档
-      （1/2/3 均会被证件照红线钳制：磨皮≤20%、保留≥85%原生纹理、不改骨相）
+      （1/2/3 均会被证件照红线钳制：磨皮≤12%、保留≥90%原生纹理、不改骨相）；
+      retouch_strength 还原度滑杆 0~1（默认 1，前端默认 0.7 轻修）
     - 证件照: id_photo_align 自动人脸对齐, gender 男女切换
     - 背景色: 支持 16 种颜色
 
@@ -134,6 +136,9 @@ async def process_photo(
     if not (0 <= beautify_level <= 4):
         raise HTTPException(status_code=400,
                             detail=f"beautify_level 必须在 0-4 之间（4=艺术档，仅非证件照流程），当前: {beautify_level}")
+    if not (0.0 <= retouch_strength <= 1.0):
+        raise HTTPException(status_code=400,
+                            detail=f"retouch_strength 必须在 0-1 之间（还原度滑杆），当前: {retouch_strength}")
     if width != 0 and not (1 <= width <= 8000):
         raise HTTPException(status_code=400, detail=f"width 必须在 1-8000 之间，当前: {width}")
     if height != 0 and not (1 <= height <= 8000):
@@ -189,6 +194,7 @@ async def process_photo(
         beautify_brighten=beautify_brighten,
         beautify_blemish=beautify_blemish,
         beautify_adaptive=beautify_adaptive,
+        retouch_strength=retouch_strength,
         id_photo_align=id_photo_align,
         gender=gender if gender and gender != "None" else None,
     )

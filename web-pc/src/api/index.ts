@@ -361,6 +361,7 @@ export interface ProcessParams {
   beautify_smooth?: boolean
   beautify_brighten?: boolean
   beautify_blemish?: boolean
+  retouch_strength?: number
   id_photo_align?: boolean
   gender?: string
 }
@@ -434,6 +435,7 @@ export function processPhoto(file: File, params: ProcessParams): Promise<Process
   if (params.beautify_smooth !== undefined) formData.append('beautify_smooth', String(params.beautify_smooth))
   if (params.beautify_brighten !== undefined) formData.append('beautify_brighten', String(params.beautify_brighten))
   if (params.beautify_blemish !== undefined) formData.append('beautify_blemish', String(params.beautify_blemish))
+  if (params.retouch_strength !== undefined) formData.append('retouch_strength', String(params.retouch_strength))
   if (params.id_photo_align !== undefined) formData.append('id_photo_align', String(params.id_photo_align))
   if (params.gender) formData.append('gender', params.gender)
 
