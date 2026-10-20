@@ -118,7 +118,10 @@ async def process_photo(
             colors = json.loads(colors)
         if not colors:
             colors = ["white", "blue", "red"]
-        if bg_color != "white" and bg_color not in colors:
+        # custom:#RRGGBB 是用户自由取色（简历/工牌照等模板外场景），放行；
+        # 真正的非法色名仍拒绝。bg_color 的最终解析在 background.parse_bg_color。
+        is_custom = bg_color.startswith("custom:")
+        if not is_custom and bg_color != "white" and bg_color not in colors:
             raise HTTPException(
                 status_code=400,
                 detail=f"模板 {tmpl.name} 不支持背景色 '{bg_color}'，仅支持: {', '.join(colors)}",

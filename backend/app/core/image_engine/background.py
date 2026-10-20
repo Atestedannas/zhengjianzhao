@@ -44,7 +44,40 @@ BG_COLOR_MAP = {
     "maroon":     (128, 0, 0),       # 深红
     "teal":       (0, 128, 128),     # 青色
     "lavender":   (230, 230, 250),   # 淡紫
+    # ---- 扩展色板（2026-10：用户反馈「背景颜色太单调」）----
+    "pearl_white": (245, 245, 245),  # 珍珠白（比纯白柔和，打印不刺眼）
+    "wine_red":    (158, 31, 53),    # 酒红（部分考试/社保卡）
+    "forest_green":(34, 85, 51),     # 墨绿
+    "mint_green":  (199, 237, 204),  # 薄荷绿
+    "rose":        (255, 228, 225),  # 玫瑰粉
+    "champagne":   (247, 231, 206),  # 香槟米
+    "dark_gray":   (96, 96, 96),     # 深灰
 }
+
+
+def parse_bg_color(bg_color: str):
+    """解析背景色参数 → (R,G,B) 或 None（keep）.
+
+    支持两种形态：
+      1. 预设色名（BG_COLOR_MAP 的 key）；
+      2. 自定义十六进制 "custom:#RRGGBB"（前端色板取色器下发）。
+    无法识别返回 "white" 对应的色值（保持旧版的兜底语义）。
+    """
+    if bg_color == "keep":
+        return None
+    if bg_color.startswith("custom:"):
+        hexpart = bg_color.split(":", 1)[1].lstrip("#")
+        try:
+            if len(hexpart) == 6:
+                return (int(hexpart[0:2], 16), int(hexpart[2:4], 16), int(hexpart[4:6], 16))
+        except ValueError:
+            pass
+        logger.warning(f"Invalid custom bg_color '{bg_color}', defaulting to white.")
+        return BG_COLOR_MAP["white"]
+    if bg_color not in BG_COLOR_MAP:
+        logger.warning(f"Unknown bg_color '{bg_color}', defaulting to white.")
+        bg_color = "white"
+    return BG_COLOR_MAP[bg_color]
 
 # BiRefNet 模型文件名（backend/models/ 目录）
 BIRefNET_MODEL_FILE = "BiRefNet-general-bb_swin_v1_tiny-epoch_232.onnx"
@@ -373,16 +406,14 @@ def replace_background(
         logger.debug("Background kept as-is.")
         return image.convert("RGB") if image.mode != "RGB" else image
 
-    if bg_color not in BG_COLOR_MAP:
-        logger.warning(f"Unknown bg_color '{bg_color}', defaulting to white.")
-        bg_color = "white"
-
     engine = resolve_engine()
     if engine == "off":
         logger.warning(f"BG_ENGINE=off：跳过 AI 抠图，保留原背景（bg_color={bg_color}）")
         return image.convert("RGB") if image.mode != "RGB" else image
 
-    target_rgb = BG_COLOR_MAP[bg_color]
+    target_rgb = parse_bg_color(bg_color)
+    if target_rgb is None:  # keep（防御：开头的 keep 分支已拦截，这里再兜一次）
+        return image.convert("RGB") if image.mode != "RGB" else image
 
     alpha = _infer_alpha(image, engine)
     rgb = np.array(image.convert("RGB"), dtype=np.float32)

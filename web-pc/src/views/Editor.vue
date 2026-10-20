@@ -221,10 +221,14 @@
                 >
                   <div
                     class="color-swatch"
-                    :style="{ background: `rgb(${color.rgb.join(',')})` }"
+                    :style="swatchStyle(color)"
                   ></div>
                   <span class="color-name">{{ getColorLabel(color.name) }}</span>
                 </div>
+              </div>
+              <div class="custom-bg-row" v-if="photoStore.selectedBgColor === 'custom'">
+                <el-color-picker v-model="photoStore.customBgColor" size="small" />
+                <span class="setting-hint">自定义背景色 {{ photoStore.customBgColor }}</span>
               </div>
             </div>
           </el-tab-pane>
@@ -259,10 +263,10 @@
                 :min="0"
                 :max="100"
                 :step="5"
-                :marks="{ 0: '原图', 70: '轻修', 100: '完整' }"
+                :marks="{ 0: '原图', 40: '轻修', 100: '精修' }"
               />
               <p class="compliance-note">
-                当前强度 {{ strengthPercent }}%（默认 70% 轻修，以真实为主）；
+                当前强度 {{ strengthPercent }}%（推荐 40% 轻修，以真实为主）；
                 0% = 完全还原原图，磨皮/提亮/匀肤都会按此比例减弱。
               </p>
               <el-checkbox v-model="photoStore.beautifyOptions.smooth">
@@ -364,6 +368,10 @@
                   <el-radio-button value="female">女</el-radio-button>
                 </el-radio-group>
               </div>
+              <p v-if="photoStore.idPhotoAlign && !photoStore.gender" class="compliance-note">
+                性别「自动」为启发式估计（约七成准确率），仅影响服装建议文案；
+                如需准确建议请手动选择男/女。
+              </p>
             </div>
           </el-tab-pane>
         </el-tabs>
@@ -452,17 +460,46 @@ const originalFileInfo = computed(() => {
 const colorLabels: Record<string, string> = {
   keep: '保留原背景',
   white: '白色',
-  blue: '蓝色',
-  red: '红色',
+  pearl_white: '珍珠白',
+  blue: '标准蓝',
+  dark_blue: '深蓝',
+  light_blue: '浅蓝',
+  sky_blue: '天蓝',
+  red: '标准红',
+  wine_red: '酒红',
+  maroon: '深红',
   gray: '灰色',
-  black: '黑色',
-  lightblue: '浅蓝',
-  darkblue: '深蓝',
-  gradient: '渐变',
+  light_gray: '浅灰',
+  dark_gray: '深灰',
+  green: '绿色',
+  forest_green: '墨绿',
+  mint_green: '薄荷绿',
+  pink: '粉色',
+  rose: '玫瑰粉',
+  cream: '米色',
+  champagne: '香槟米',
+  navy: '藏青',
+  teal: '青色',
+  lavender: '淡紫',
+  custom: '自定义',
 }
 
 function getColorLabel(name: string): string {
   return colorLabels[name] || name
+}
+
+/** 色板样式：普通色用 rgb；keep 画斜纹占位；custom 用取色器当前值 */
+function swatchStyle(color: { name: string; rgb: number[] }): Record<string, string> {
+  if (color.name === 'keep') {
+    return {
+      background:
+        'repeating-linear-gradient(45deg, #fff 0 6px, #dcdfe6 6px 12px)',
+    }
+  }
+  if (color.name === 'custom') {
+    return { background: photoStore.customBgColor }
+  }
+  return { background: `rgb(${color.rgb.join(',')})` }
 }
 
 onMounted(async () => {
@@ -878,6 +915,13 @@ async function handleDownload() {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.custom-bg-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
 }
 
 .setting-hint {

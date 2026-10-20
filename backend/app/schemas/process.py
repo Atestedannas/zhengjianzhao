@@ -52,7 +52,7 @@ class ProcessRequest(BaseModel):
     dpi: int = Field(300, description="目标 DPI（证件照不得低于 300）")
     min_kb: int = Field(0, description="最小文件大小（KB）")
     max_kb: int = Field(100, description="最大文件大小（KB）")
-    bg_color: str = Field("white", description="背景色: white|blue|red|light_blue|dark_blue|gray|green|keep 等")
+    bg_color: str = Field("white", description="背景色: 预设色名(white|blue|red|...) | keep | custom:#RRGGBB 自定义十六进制")
     output_format: str = Field("JPEG", description="输出格式: JPEG|PNG|PDF|WEBP|BMP|TIFF")
     beautify_level: int = Field(1, description="美颜等级: 0=OFF, 1=自然微调(默认), 2/3=内部测试档, 4=艺术档(仅非证件照,不受合规红线约束)")
     beautify_smooth: bool = Field(True, description="是否启用磨皮")

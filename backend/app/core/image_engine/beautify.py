@@ -114,8 +114,8 @@ class _Params:
 # 第一原则是「越像本人越好」：磨皮只去临时瑕疵，毛孔与光影必须留在原片。
 COMPLIANT_MAX_SMOOTH = 0.12     # 磨皮力度硬上限 ≤ 12%
 COMPLIANT_MAX_BLEMISH = 0.18    # 仅去临时性痘印/红肿，保留痣与特征
-COMPLIANT_MAX_CHROMA = 0.18     # 肤色均匀化上限大幅下调（0.30 会把血色匀成苍白）
-COMPLIANT_MAX_BRIGHTEN = 0.10   # 提亮 ≤ 10%（保留面部自然明暗，不做「打光板」）
+COMPLIANT_MAX_CHROMA = 0.15     # 肤色均匀化上限（0.30 会把血色匀成苍白；再降保留气血感）
+COMPLIANT_MAX_BRIGHTEN = 0.08   # 提亮 ≤ 8%（保留面部自然明暗，不做「打光板」）
 COMPLIANT_MIN_FINE_KEEP = 0.90  # 原生纹理（毛孔）保留 ≥ 90%（禁止涂抹感）
 COMPLIANT_MAX_SHINE = 0.10      # 去油光仅压镜面高光
 COMPLIANT_MAX_CLARITY = 0.10    # 通透感回填（立体感的主要来源，保持不变）
@@ -131,12 +131,12 @@ COMPLIANT_MAX_FINE_REMOVE = 1.0 - COMPLIANT_MIN_FINE_KEEP   # = 0.10
 # 【单位教训】LAB 的 a/b/L 都是 0~255 尺度（1 单位 ≈ 1 个 CIELAB 单位），
 # 用 COMPLIANT_MAX_CHROMA(=0.15) 去乘通道值只会产生 0.1 级改动 —— 肉眼不可见。
 # 局部美化必须用「通道单位」给预算，并单独列在这里。
-COMPLIANT_MAX_LIP_A = 4.0       # 唇色红润度提升上限（a 通道，≈ +4 a*；只补气色不改唇色）
-COMPLIANT_MAX_LIP_B = 2.0       # 唇色减黄上限（b 通道，≈ -2 b*）
+COMPLIANT_MAX_LIP_A = 6.0       # 唇色红润度提升上限（a 通道，≈ +6 a*；只补气色不改唇色）
+COMPLIANT_MAX_LIP_B = 3.0       # 唇色减黄上限（b 通道，≈ -3 b*）
 COMPLIANT_MAX_TEETH_DESAT = 0.45   # 牙齿去黄/去饱和比例（相对值）
 COMPLIANT_MAX_TEETH_L = 8.0        # 牙齿提亮上限（L 级）
 EYE_CATCHLIGHT_LIFT = 3.0       # 眼神光：仅对眼区最亮的镜面反光轻微提亮（L 级）
-_BRIGHTEN_GAIN = 0.22           # 提亮主项：brighten(≤0.10) × 余量 × 该系数 → 暗部峰值约 +6 级
+_BRIGHTEN_GAIN = 0.15           # 提亮主项：brighten(≤0.08) × 余量 × 该系数 → 暗部峰值约 +3 级
                                 # （0.35 时 +13 级会把阴影抬平 → 光影扁平化的直接原因。
                                 #  增益不受 _clamp_compliant 钳制，红线口径是 brighten 参数 ≤0.10）
 
@@ -149,7 +149,7 @@ _PARAMS = {
     # brighten=0.08 × 增益 0.22：暗部峰值约 +5 级，提神但不抬平阴影；
     # clarity=0.10：立体感的主要来源，保持 PS clarity 低档位；
     # sharpen=0.05：眼神光克制版，避免睫毛白边。
-    BeautyLevel.COMPLIANT: _Params(0.08, 0.90, 0.15, 0.12, 0.08, 0.08, 0.99, 0.10, 0.05),
+    BeautyLevel.COMPLIANT: _Params(0.08, 0.92, 0.15, 0.10, 0.08, 0.06, 0.99, 0.10, 0.05),
     # 内部对比测试档（会被 _clamp_compliant 压回上限，仅用于美学回归测试）
     BeautyLevel.MEDIUM:    _Params(0.78, 0.44, 0.68, 0.62, 0.55, 0.46, 0.85, 0.13, 0.22),
     BeautyLevel.HIGH:      _Params(0.92, 0.30, 0.85, 0.78, 0.72, 0.60, 0.78, 0.18, 0.30),

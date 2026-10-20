@@ -125,6 +125,8 @@ export const usePhotoStore = defineStore('photo', () => {
   // 默认「保留原背景」（keep）：原图蓝底/白底本身合规，只在用户主动选择时才换底，
   // 避免不必要的抠图白边与质感损失（用户实测反馈）
   const selectedBgColor = ref('keep')
+  // 自定义背景色（取色器）：选中「自定义」色板时生效，最终以 custom:#RRGGBB 发给后端
+  const customBgColor = ref('#409EFF')
   // 0=关闭原图直出, 1=自然微调（证件照默认档，后端强制合规红线）, 4=艺术档（仅非证件照）
   const beautifyLevel = ref(1)
   // 「还原度」滑杆：0~1，1=完整档位强度，0.7=轻修（默认，以真实为主），0=原图
@@ -151,9 +153,21 @@ export const usePhotoStore = defineStore('photo', () => {
   const availableBgColors = computed(() => {
     if (currentTemplate.value) {
       const allowed = currentTemplate.value.allowed_bg_colors
-      return bgColors.value.filter((c) => allowed.includes(c.name))
+      // 模板模式：预置允许色 + 常驻「自定义」入口
+      return [
+        ...bgColors.value.filter((c) => allowed.includes(c.name)),
+        { name: 'custom', rgb: [-1, -1, -1] },
+      ]
     }
     return bgColors.value
+  })
+
+  /** 实际发给后端的 bg_color：选中自定义时组装为 custom:#RRGGBB */
+  const effectiveBgColor = computed(() => {
+    if (selectedBgColor.value === 'custom') {
+      return `custom:${customBgColor.value}`
+    }
+    return selectedBgColor.value
   })
 
   // ===== 方法 =====
@@ -202,10 +216,28 @@ export const usePhotoStore = defineStore('photo', () => {
       bgColors.value = [
         { name: 'keep', rgb: [-1, -1, -1] },
         { name: 'white', rgb: [255, 255, 255] },
-        { name: 'blue', rgb: [43, 117, 217] },
-        { name: 'red', rgb: [217, 43, 43] },
-        { name: 'gray', rgb: [128, 128, 128] },
-        { name: 'black', rgb: [0, 0, 0] },
+        { name: 'pearl_white', rgb: [245, 245, 245] },
+        { name: 'blue', rgb: [67, 142, 219] },
+        { name: 'dark_blue', rgb: [25, 55, 128] },
+        { name: 'light_blue', rgb: [173, 216, 230] },
+        { name: 'sky_blue', rgb: [135, 206, 235] },
+        { name: 'red', rgb: [213, 43, 30] },
+        { name: 'wine_red', rgb: [158, 31, 53] },
+        { name: 'maroon', rgb: [128, 0, 0] },
+        { name: 'gray', rgb: [192, 192, 192] },
+        { name: 'light_gray', rgb: [220, 220, 220] },
+        { name: 'dark_gray', rgb: [96, 96, 96] },
+        { name: 'green', rgb: [0, 128, 0] },
+        { name: 'forest_green', rgb: [34, 85, 51] },
+        { name: 'mint_green', rgb: [199, 237, 204] },
+        { name: 'pink', rgb: [255, 192, 203] },
+        { name: 'rose', rgb: [255, 228, 225] },
+        { name: 'cream', rgb: [255, 253, 208] },
+        { name: 'champagne', rgb: [247, 231, 206] },
+        { name: 'navy', rgb: [0, 0, 128] },
+        { name: 'teal', rgb: [0, 128, 128] },
+        { name: 'lavender', rgb: [230, 230, 250] },
+        { name: 'custom', rgb: [-1, -1, -1] },
       ]
     }
   }
@@ -317,7 +349,7 @@ export const usePhotoStore = defineStore('photo', () => {
         resize_mode: resizeMode.value,
         upscale: true,
         dpi: dpi.value,
-        bg_color: selectedBgColor.value,
+        bg_color: effectiveBgColor.value,
         output_format: outputFormat.value,
         beautify_level: beautifyLevel.value,
         beautify_smooth: beautifyOptions.value.smooth,
@@ -403,6 +435,8 @@ export const usePhotoStore = defineStore('photo', () => {
     processResult,
     selectedTemplate,
     selectedBgColor,
+    customBgColor,
+    effectiveBgColor,
     beautifyLevel,
     retouchStrength,
     beautifyOptions,

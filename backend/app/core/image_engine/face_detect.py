@@ -237,6 +237,25 @@ def align_face(
     crop_right = crop_left + int(round(crop_w))
     crop_bottom = crop_top + int(round(crop_h))
 
+    # ---- 头肩保护（2026-10 用户反馈：对齐把肩膀裁没、变成大头贴）----
+    # 合规构图必须露出完整双肩：头发顶部到下巴的竖直跨度约 1.55×脸高，
+    # 再加上肩线到下缘的空间，合理的裁高不应小于约 3×脸高（脸高占构图 ~33%）。
+    # 若双锚点解出的裁高比这还小，说明对齐放大过度 → 按头肩构图重新放大裁剪框。
+    min_crop_h = face.height * 3.0
+    if crop_bottom - crop_top < min_crop_h:
+        crop_h = min_crop_h
+        # 目标比例锁死，裁宽必须跟着裁高走（否则会拉伸变形）
+        crop_w = crop_h * (W / H)
+        crop_left = int(round(face_cx - crop_w / 2.0))
+        # 竖直位置：头顶仍留白 ~8%，不再使用「眼位锚定」
+        crop_top = int(round(head_top - top_margin * crop_h))
+        crop_right = crop_left + int(round(crop_w))
+        crop_bottom = crop_top + int(round(crop_h))
+        logger.info(
+            f"Align guarded: face {face.width}x{face.height} would over-zoom "
+            f"(crop_h={min_crop_h:.0f}), widened to include head & shoulders"
+        )
+
     if crop_right - crop_left < 32 or crop_bottom - crop_top < 32:
         logger.warning("Face alignment produced invalid crop, using full image resize.")
         return image.resize((target_width, target_height), Image.LANCZOS)
