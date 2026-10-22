@@ -30,6 +30,10 @@ export function processPhoto(filePath, params = {}) {
   if (params.beautifySmooth !== undefined) data.beautify_smooth = params.beautifySmooth
   if (params.beautifyBrighten !== undefined) data.beautify_brighten = params.beautifyBrighten
   if (params.beautifyBlemish !== undefined) data.beautify_blemish = params.beautifyBlemish
+  // 分区域处理系统三开关（后端默认全开）
+  if (params.beautifyTone !== undefined) data.beautify_tone = params.beautifyTone
+  if (params.beautifyTexture !== undefined) data.beautify_texture = params.beautifyTexture
+  if (params.beautifyFeature !== undefined) data.beautify_feature = params.beautifyFeature
 
   // 证件照
   if (params.idPhotoAlign) data.id_photo_align = params.idPhotoAlign

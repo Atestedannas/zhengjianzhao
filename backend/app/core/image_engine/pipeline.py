@@ -41,6 +41,10 @@ class ProcessParams:
     beautify_brighten: bool = True
     beautify_blemish: bool = True
     beautify_adaptive: bool = True   # ⑤ 按肤质/曝光/清晰度/人脸占比自适应缩放强度
+    # 分区域处理系统（⑦⑧⑨）：默认全开，关掉即退回「整脸滤镜」旧行为
+    beautify_tone: bool = True       # ⑦ 分区域低频肤色修正（额头/两颊/下颌/脖子）
+    beautify_texture: bool = True    # ⑧ 纹理回注（磨皮拿走的毛孔细节补回来）
+    beautify_feature: bool = True    # ⑨ 五官轮廓带局部增强（眼/眉/鼻翼/唇缘）
     retouch_strength: float = 1.0    # ⑥ 用户「还原度」滑杆 0~1（默认 1=完整档位，0=不修图）
 
     # === 证件照对齐 ===
@@ -184,6 +188,34 @@ def _output_sharpen(image: Image.Image, target_w: int, target_h: int,
     return Image.fromarray(np.ascontiguousarray(out[:, :, ::-1]))
 
 
+def render_baseline(image: Image.Image, params: ProcessParams) -> ProcessResult:
+    """生成「与效果图同几何」的原图基线（对比用，不做美颜/不换背景）.
+
+    【为什么必须由后端出这张图】用户对比「原图 / 效果图」时，最致命的问题
+    不是美颜强弱，而是**两张图的几何不一致**：效果图是「裁剪 + 证件照对齐 +
+    缩放到目标像素」之后的产物，而上传的原图还是手机原片（比例、人脸位置、
+    缩放全都不一样）。把这两张图并排放在一起，用户看到的第一个差异永远是
+    「右边脸怎么这么大」，根本没法判断肤色/质感的变化。
+
+    正确做法是让后端用**完全相同的几何链路**（同样的裁剪、同样的对齐、
+    同样的输出像素与 DPI）再渲染一张「只关掉美颜、只关掉换底」的图，
+    前端拿这两张同尺寸图做对比 —— 缩放比例、中心点、裁切窗口天然一致，
+    差异只剩美颜本身。这就是「控制变量」。
+
+    实现上直接复用 process_image：把 beautify_level 置 0、bg_color 置 keep，
+    走的是同一段裁剪/对齐/锐化/编码代码，几何不可能跑偏（不复制粘贴逻辑）。
+    """
+    from dataclasses import replace
+
+    baseline_params = replace(params, beautify_level=BeautyLevel.OFF, bg_color="keep")
+    result = process_image(image, baseline_params)
+    logger.info(
+        f"Baseline rendered: {result.result_pixels}@{result.result_dpi}DPI "
+        f"{result.result_size_kb:.1f}KB (same geometry as result)"
+    )
+    return result
+
+
 def process_image(
     image: Image.Image, params: ProcessParams,
 ) -> ProcessResult:
@@ -286,6 +318,9 @@ def process_image(
                 adaptive=params.beautify_adaptive,
                 compliant=(params.beautify_level != BeautyLevel.ARTISTIC),
                 strength=params.retouch_strength,
+                tone=params.beautify_tone,
+                texture=params.beautify_texture,
+                feature=params.beautify_feature,
             )
         except Exception as e:
             warnings.append(f"Beautify failed: {e}")

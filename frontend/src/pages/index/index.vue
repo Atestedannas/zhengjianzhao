@@ -135,7 +135,7 @@
           <view class="spinner-ring spinner-ring-3" />
         </view>
         <text class="processing-title">正在处理照片...</text>
-        <text class="processing-desc">智能美颜 · 尺寸调整 · 背景替换 · 格式优化</text>
+        <text class="processing-desc">分区美颜 · 尺寸调整 · 背景替换 · 格式优化</text>
         <view class="processing-steps">
           <view class="proc-step done">
             <view class="proc-dot" />
@@ -149,6 +149,10 @@
             <view class="proc-dot" />
             <text>AI 处理中</text>
           </view>
+        </view>
+        <text class="processing-eta">已等待 {{ elapsedSeconds }} 秒，最长等待 90 秒</text>
+        <view class="processing-cancel" @click="handleCancelProcess">
+          <text>取消等待</text>
         </view>
       </view>
     </view>
@@ -304,6 +308,34 @@ function onTemplateChange(data) {
   }
 }
 
+/** 已等待秒数：本地计时，给用户「确实在动」的反馈 */
+const elapsedSeconds = ref(0)
+let elapsedTimer = null
+
+function startElapsedTimer() {
+  stopElapsedTimer()
+  const started = Date.now()
+  elapsedSeconds.value = 0
+  elapsedTimer = setInterval(() => {
+    elapsedSeconds.value = Math.floor((Date.now() - started) / 1000)
+  }, 1000)
+}
+
+function stopElapsedTimer() {
+  if (elapsedTimer) {
+    clearInterval(elapsedTimer)
+    elapsedTimer = null
+  }
+}
+
+/** 用户取消：立刻停轮询 + 恢复按钮（任务可能仍在后台完成） */
+function handleCancelProcess() {
+  photoStore.cancelProcess()
+  stopElapsedTimer()
+  currentStep.value = 2
+  uni.showToast({ title: '已停止等待，可重新生成', icon: 'none' })
+}
+
 async function handleGenerate() {
   // 防止重复提交：后端按次扣费，处理中不允许再次点击
   if (photoStore.isProcessing) return
@@ -320,9 +352,11 @@ async function handleGenerate() {
   }
 
   currentStep.value = 3
+  startElapsedTimer()
   const filePath = photoStore.croppedPath || photoStore.originalPath
 
   const result = await photoStore.processPhoto(filePath)
+  stopElapsedTimer()
 
   if (result.cancelled) return
 
@@ -838,5 +872,25 @@ function nextStep() {
 @keyframes procPulse {
   0%, 100% { box-shadow: 0 0 0 0 rgba(79, 110, 247, 0.4); }
   50% { box-shadow: 0 0 0 8rpx rgba(79, 110, 247, 0); }
+}
+
+/* 已等待时间 + 取消入口：解决「一直转圈、不知道要等多久、也没法退出」 */
+.processing-eta {
+  margin-top: $spacing-md;
+  font-size: 24rpx;
+  color: $text-hint;
+}
+
+.processing-cancel {
+  margin-top: $spacing-sm;
+  padding: 12rpx 40rpx;
+  border-radius: 999rpx;
+  border: 2rpx solid $border-color;
+  font-size: 26rpx;
+  color: $text-secondary;
+
+  &:active {
+    background: rgba(0, 0, 0, 0.04);
+  }
 }
 </style>

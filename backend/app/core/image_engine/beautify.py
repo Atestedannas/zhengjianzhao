@@ -107,6 +107,10 @@ class _Params:
     gamma: float       # 提亮曲线（越小越亮）
     clarity: float     # 通透感（中低频对比回填）
     sharpen: float     # 眼部锐化强度
+    # ---- 分区域处理系统（本轮新增）----
+    tone: float = 0.0      # 分区域低频肤色修正强度（额头/两颊/下颌/脖子各自拉向参考肤色）
+    texture: float = 0.0   # 纹理回注强度（把磨皮拿走的毛孔级细节按比例补回）
+    feature: float = 0.0   # 五官轮廓带局部增强强度（眼/眉/鼻翼/唇缘）
 
 
 # ---- 证件照美颜红线（「修饰瑕疵，保留真实」口径，任何档位都不得突破）----
@@ -126,6 +130,28 @@ COMPLIANT_MAX_SHARPEN = 0.06    # 眼神光级微锐化，禁止改变五官立�
 # （= 1 - COMPLIANT_MIN_FINE_KEEP），COMPLIANT_MAX_SMOOTH 只是不可越过的硬顶。
 # 出图档的 smooth 参数取 0.08（约 8% 磨皮），自适应强度再向下浮动。
 COMPLIANT_MAX_FINE_REMOVE = 1.0 - COMPLIANT_MIN_FINE_KEEP   # = 0.10
+
+# ---- 分区域肤色修正预算（低频，通道单位）----
+# 【为什么需要这一层】整脸磨皮/匀肤只能压「高频斑点」和「中频色块」，
+# 而证件照最常见的脏感来自**低频区域色差**：额头偏黄、两颊偏红、
+# 下颌偏暗、脖子与脸不是一个色。低频色差不是瑕疵，是「区域性的肤色偏移」，
+# 只能靠「分区域统计 → 拉向整脸参考肤色」来修，磨皮再强也修不掉。
+# 预算按通道单位给（L/a/b 均为 0~255 尺度），上限刻意很小：
+# 只允许「同一张脸的左右/上下更一致」，不允许把肤色整体改掉（身份特征）。
+COMPLIANT_MAX_TONE_SHIFT_L = 6.0    # 区域亮度向整脸中位数靠拢的上限（±6 级）
+COMPLIANT_MAX_TONE_SHIFT_A = 4.0    # 区域红度（血色）修正上限（±4 a*）
+COMPLIANT_MAX_TONE_SHIFT_B = 4.0    # 区域黄度修正上限（±4 b*）
+TONE_GRID = 4                       # 区域网格：4x4（额头/太阳穴/两颊/鼻/口周/下颌/脖子）
+
+# ---- 纹理回注预算 ----
+# 「保留纹理」不能只靠「少磨皮」：磨皮算子再保边，也会把毛孔级起伏压掉一部分。
+# 这里把磨皮**实际拿走**的那部分细节按比例回注到平坦皮肤上（强边不回注，
+# 避免把睫毛/鼻翼拉出白边），让「磨皮可感知、毛孔仍在」同时成立。
+TEXTURE_REINJECT_MAX = 0.55         # 最多回注磨皮拿走的 55%（texture=1.0 时）
+
+# ---- 局部增强预算 ----
+# 五官边缘清晰化：只作用于「眼/眉/鼻翼/唇」轮廓带，不改形状、不改位置。
+COMPLIANT_MAX_FEATURE_SHARPEN = 0.06
 
 # ---- 局部美化预算（③ 唇色/牙齿、④ 眼神光）----
 # 【单位教训】LAB 的 a/b/L 都是 0~255 尺度（1 单位 ≈ 1 个 CIELAB 单位），
@@ -149,16 +175,25 @@ _PARAMS = {
     # brighten=0.08 × 增益 0.22：暗部峰值约 +5 级，提神但不抬平阴影；
     # clarity=0.10：立体感的主要来源，保持 PS clarity 低档位；
     # sharpen=0.05：眼神光克制版，避免睫毛白边。
-    BeautyLevel.COMPLIANT: _Params(0.08, 0.92, 0.15, 0.10, 0.08, 0.06, 0.99, 0.10, 0.05),
+    # tone/texture/feature 是「分区域处理系统」的三个新轴：
+    #   tone=0.55 只做「同一张脸内更一致」（区域色差拉向中位数，预算见
+    #              COMPLIANT_MAX_TONE_SHIFT_*，绝不允许整体改肤色）；
+    #   texture=0.45 把磨皮拿走的毛孔细节回注 45%（磨皮可感知 + 毛孔仍在）；
+    #   feature=0.45 只在五官轮廓带做微对比，不改形状不改位置。
+    BeautyLevel.COMPLIANT: _Params(0.08, 0.92, 0.15, 0.10, 0.08, 0.06, 0.99, 0.10, 0.05,
+                                   0.55, 0.45, 0.45),
     # 内部对比测试档（会被 _clamp_compliant 压回上限，仅用于美学回归测试）
-    BeautyLevel.MEDIUM:    _Params(0.78, 0.44, 0.68, 0.62, 0.55, 0.46, 0.85, 0.13, 0.22),
-    BeautyLevel.HIGH:      _Params(0.92, 0.30, 0.85, 0.78, 0.72, 0.60, 0.78, 0.18, 0.30),
+    BeautyLevel.MEDIUM:    _Params(0.78, 0.44, 0.68, 0.62, 0.55, 0.46, 0.85, 0.13, 0.22,
+                                   0.85, 0.25, 0.70),
+    BeautyLevel.HIGH:      _Params(0.92, 0.30, 0.85, 0.78, 0.72, 0.60, 0.78, 0.18, 0.30,
+                                   0.95, 0.15, 0.85),
     # 艺术档（仅非证件照流程，apply_beautify 需显式 compliant=False 才真正生效；
     # 误传 compliant=True 时会被 _clamp_compliant 压回红线，等价自然微调）：
     # 不改骨相/五官几何，只在肤色、光影、通透与锐度上向「PS 中等修图」靠拢，
     # 纹理保留 ≥80% 仍由 fine_keep 下限保证。各轴必须**严格强于** COMPLIANT
     # （合规档下调到 0.08/0.12 后，艺术档相应取 0.20/0.22）。
-    BeautyLevel.ARTISTIC:  _Params(0.20, 0.88, 0.25, 0.22, 0.14, 0.12, 0.96, 0.12, 0.08),
+    BeautyLevel.ARTISTIC:  _Params(0.20, 0.88, 0.25, 0.22, 0.14, 0.12, 0.96, 0.12, 0.08,
+                                   0.70, 0.35, 0.55),
 }
 
 
@@ -181,6 +216,13 @@ def _clamp_compliant(para: _Params) -> _Params:
         gamma=max(float(para.gamma), 0.97),
         clarity=min(float(para.clarity), COMPLIANT_MAX_CLARITY),
         sharpen=min(float(para.sharpen), COMPLIANT_MAX_SHARPEN),
+        # 新增三轴同样必须被红线钳制：
+        #   tone 只允许 ±(6,4,4) 的区域色差修正，不改变整体肤色；
+        #   texture 最多回注 55% 被磨掉的细节（回注过多等于没磨皮）；
+        #   feature 最多 6%（与眼神光同一量级，避免「锐化脸」）。
+        tone=min(float(para.tone), 1.0),
+        texture=min(float(para.texture), 1.0),
+        feature=min(float(para.feature), 1.0),
     )
 
 
@@ -921,6 +963,158 @@ def _structure_protect_landmarks(bgr: np.ndarray, faces: List[list],
     return np.clip(m.astype(np.float32) / 255.0, 0.0, 1.0)
 
 
+# ============================================================ 分区域肤色修正（⑦）
+# 【为什么必须分区域】磨皮压的是「高频斑点」，匀肤压的是「中频色块」，两者都
+# 解决不了证件照最常见的脏感来源 —— **低频区域色差**：额头偏黄、两颊偏红、
+# 下颌偏暗、脖子与脸不是一个色。这类偏移的尺度比整张脸还大，任何滤波算子都
+# 只会把它一起抹平（结果是「脸糊了，色差还在」）。
+# 正确做法是「分区域统计 → 把每个区域的低频色偏拉向整脸参考肤色 → 羽化融合」，
+# 即 PS 里的「分区域曲线 / 局部色阶」，而不是再来一遍滤镜。
+#
+# 约束（证件照红线）：
+#   * 只允许「同一张脸内更一致」，不允许整体改肤色 —— 参考值取**本图皮肤中位数**，
+#     所以整脸偏移为 0 时修正量也为 0；
+#   * 每个区域修正量硬夹在 COMPLIANT_MAX_TONE_SHIFT_* 内（L≤6 / a≤4 / b≤4）；
+#   * 网格级统计 + 双线性上采样 + 柔化，避免出现「一块一块」的补丁感；
+#   * 只作用于皮肤蒙版内，头发/背景/五官不受影响。
+
+def _tone_reference(lab: np.ndarray, mask: np.ndarray) -> Optional[np.ndarray]:
+    """整脸参考肤色（L/a/b 的皮肤中位数）；皮肤像素太少时返回 None."""
+    sel = mask > 0.5
+    if int(sel.sum()) < 400:
+        return None
+    return np.array([
+        float(np.median(lab[:, :, 0][sel])),
+        float(np.median(lab[:, :, 1][sel])) - 128.0,
+        float(np.median(lab[:, :, 2][sel])) - 128.0,
+    ], dtype=np.float32)
+
+
+def _tone_shift_map(lab: np.ndarray, mask: np.ndarray,
+                    grid: int = TONE_GRID) -> Optional[np.ndarray]:
+    """
+    计算分区域肤色修正量图 (h, w, 3)，单位为 LAB 通道单位（L/a/b 已减 128）.
+
+    做法：把画面切成 grid×grid 个格子，逐格统计皮肤像素的 L/a/b 中位数，
+    与整脸参考值相减得到该格的色偏；色偏按预算夹紧后做**双线性上采样**，
+    得到平滑的修正量场。整脸偏移本来就为 0 的区域修正量自然为 0。
+    """
+    import cv2
+
+    ref = _tone_reference(lab, mask)
+    if ref is None:
+        return None
+
+    h, w = mask.shape[:2]
+    gh = max(1, min(int(grid), h))
+    gw = max(1, min(int(grid), w))
+    cell_h = max(1, h // gh)
+    cell_w = max(1, w // gw)
+
+    shift_small = np.zeros((gh, gw, 3), dtype=np.float32)
+    weight_small = np.zeros((gh, gw), dtype=np.float32)
+    for gy in range(gh):
+        y0, y1 = gy * cell_h, (gy + 1) * cell_h if gy < gh - 1 else h
+        for gx in range(gw):
+            x0, x1 = gx * cell_w, (gx + 1) * cell_w if gx < gw - 1 else w
+            sub_mask = mask[y0:y1, x0:x1] > 0.5
+            if int(sub_mask.sum()) < 120:
+                continue          # 该格几乎没有皮肤：不统计，靠邻格插值填充
+            sub = lab[y0:y1, x0:x1]
+            med = np.array([
+                float(np.median(sub[:, :, 0][sub_mask])),
+                float(np.median(sub[:, :, 1][sub_mask])) - 128.0,
+                float(np.median(sub[:, :, 2][sub_mask])) - 128.0,
+            ], dtype=np.float32)
+            d = ref - med
+            shift_small[gy, gx] = [
+                float(np.clip(d[0], -COMPLIANT_MAX_TONE_SHIFT_L, COMPLIANT_MAX_TONE_SHIFT_L)),
+                float(np.clip(d[1], -COMPLIANT_MAX_TONE_SHIFT_A, COMPLIANT_MAX_TONE_SHIFT_A)),
+                float(np.clip(d[2], -COMPLIANT_MAX_TONE_SHIFT_B, COMPLIANT_MAX_TONE_SHIFT_B)),
+            ]
+            weight_small[gy, gx] = 1.0
+
+    if float(weight_small.sum()) < 1.0:
+        return None
+
+    # 无皮肤的格子用「有效格均值」兜底，避免上采样出现黑洞
+    valid = weight_small > 0
+    if not bool(valid.all()):
+        shift_small[~valid] = shift_small[valid].mean(axis=0)
+
+    shift = cv2.resize(shift_small, (w, h), interpolation=cv2.INTER_LINEAR)
+    # 网格上采样后再柔化一次：消除格线感，保证「渐变」而不是「补丁」
+    soft_r = max(2, int(min(h, w) / (grid * 6)))
+    for c in range(3):
+        shift[:, :, c] = _fast_blur(shift[:, :, c], soft_r)
+    return shift.astype(np.float32)
+
+
+# ============================================================ 纹理回注（⑧）
+# 「保留纹理」不能只靠「少磨皮」：磨皮算子再保边，也会把毛孔级起伏压掉一部分；
+# 而完全不磨又会保留噪点。真正的做法是 PS 的「高低频分离」：
+#   高频层 = 原图 - 磨皮基底，磨皮只**部分**压制高频；
+#   压制后把「被拿走的那部分高频」按比例**回注**到平坦皮肤上。
+# 强边（睫毛/鼻翼/痣/发丝）不回注，否则会把边缘拉出白边黑边。
+
+def _texture_reinject(removed: np.ndarray, guard: np.ndarray,
+                      strength: float) -> np.ndarray:
+    """
+    计算纹理回注量.
+
+    removed: 磨皮真正拿走的高频量（high_original - high_after）
+    guard:   强边保护（1=平坦皮肤可回注，0=强边不回注）
+    strength: 回注比例（0~1，最终乘 TEXTURE_REINJECT_MAX）
+
+    【为什么不直接「全额还原」】全额还原等于没磨皮，磨皮对中频斑点/噪点的
+    压制会一起消失。回注只补「毛孔尺度的细节」：用幅度软阈值把
+    大起伏（痣、睫毛根、鼻翼边）排除在外，剩下的才是要找回的皮肤质感。
+    """
+    if strength <= 0.0:
+        return np.zeros_like(removed)
+    # 幅度门控：毛孔级起伏（≈1~6 级）吃满回注，更大起伏本来就没被压掉
+    small = 1.0 - _ramp(np.abs(removed), 1.0, 12.0)
+    return removed * (TEXTURE_REINJECT_MAX * strength) * small * guard
+
+
+# ============================================================ 五官轮廓带局部增强（⑨）
+# 「眼睛、眉毛、鼻翼边缘不够清晰」不能靠整脸锐化解决（那会把皮肤噪点一起放大，
+# 变成「锐化脸」）。这里只在**五官轮廓带**（眼/眉/鼻翼/唇缘，由关键点生成）
+# 做 1~2px 尺度的局部对比增强，不改形状、不改位置、不改瞳孔颜色。
+
+def _feature_band_mask(bgr: np.ndarray, faces: List[list],
+                       main: _FaceGeometry) -> Optional[np.ndarray]:
+    """
+    五官轮廓带蒙版 (0~1)：眼/眉/鼻翼/唇缘的**描边带**（不是整块五官）.
+
+    为什么用描边带而不是整块：整块增强会把眼白/虹膜一起提对比（显假、改色），
+    描边带只增强「五官与皮肤的交界」，观感就是「五官清楚了」。
+    """
+    import cv2
+
+    h, w = bgr.shape[:2]
+    iod = float(main.iod)
+    m = np.zeros((h, w), dtype=np.uint8)
+
+    for lm in faces:
+        for idx in (_LEFT_EYE, _RIGHT_EYE, _LEFT_EYEBROW, _RIGHT_EYEBROW, _LIPS):
+            pts = _pts(lm, idx, w, h)
+            if len(pts) >= 3:
+                cv2.polylines(m, [pts.astype(np.int32)], True, 255,
+                              max(1, _scale(iod, 0.05, 2)))
+        # 鼻翼：两个鼻孔点各画一个小环（鼻翼边缘是「鼻形清楚」的关键）
+        for i in _NOSTRILS:
+            if i < len(lm):
+                cv2.circle(m, (int(lm[i].x * w), int(lm[i].y * h)),
+                           max(2, _scale(iod, 0.09, 2)), 255,
+                           max(1, _scale(iod, 0.04, 1)))
+
+    if int(m.max()) == 0:
+        return None
+    m = cv2.GaussianBlur(m, (0, 0), max(0.8, _scale(iod, 0.02, 1) * 0.6))
+    return np.clip(m.astype(np.float32) / 255.0, 0.0, 1.0)
+
+
 def _fallback_region(bgr: np.ndarray,
                      parse_skin: Optional[np.ndarray] = None) -> Tuple[Optional[np.ndarray], Optional[_FaceGeometry]]:
     """
@@ -1051,6 +1245,13 @@ def _adaptive_params(para: _Params, bgr: np.ndarray, mask: np.ndarray,
         gamma=para.gamma,
         clarity=para.clarity * (0.90 + 0.20 * sharp_scale),
         sharpen=para.sharpen * sharp_scale * face_scale,
+        # ⑦⑧⑨ 三个新轴：
+        #   tone 与清晰度无关，按人脸占比收敛（小脸时区域统计不可靠）；
+        #   texture 是「找回细节」，脸越小越需要（插值损失更明显），但上限 1.0；
+        #   feature 跟清晰度走：越糊越不能硬锐化，否则把压缩噪点当轮廓放大。
+        tone=para.tone * (0.85 + 0.15 * face_scale),
+        texture=min(1.0, para.texture * (1.15 - 0.15 * sharp_scale)),
+        feature=para.feature * sharp_scale * face_scale,
     )
     logger.debug(
         f"Adaptive: mean_l={mean_l:.1f} texture={texture:.2f} sharp={sharpness:.2f} "
@@ -1121,19 +1322,26 @@ def _retouch(bgr: np.ndarray, mask: np.ndarray, geo: _FaceGeometry, para: _Param
              lips_mask: Optional[np.ndarray] = None,
              teeth_mask: Optional[np.ndarray] = None,
              smooth_op: str = SMOOTH_OPERATOR,
-             structure_protect: Optional[np.ndarray] = None) -> np.ndarray:
+             structure_protect: Optional[np.ndarray] = None,
+             feature_band: Optional[np.ndarray] = None,
+             debug: Optional[dict] = None) -> np.ndarray:
     """
     在 LAB 空间做实际的美颜运算，最后**分路贴蒙版**合成.
 
-    亮度层 L：频率分离磨皮（高频毛孔 + 中频瑕疵）→ 去油光 → 提亮 → 通透感
+    亮度层 L：频率分离磨皮（高频毛孔 + 中频瑕疵）→ **纹理回注** → 去油光
+              → 提亮 → 通透感 → **分区域肤色修正**
     色度层 a/b：大半径匀肤（去红斑/色块，不动亮度纹理）
 
     合成顺序（顺序不能改）：
-      1. 皮肤路：磨皮/匀肤/提亮/通透，贴皮肤蒙版 `mask`；
-      2. 眼神光：在合成后的亮度上做局部锐化 + 角膜反光提亮，贴眼/眉蒙版；
-      3. 唇色、牙齿：各自的 `_local_lab_edit`，贴自己的蒙版。
-    皮肤蒙版天然抠掉了眼/眉/唇，所以 2、3 必须走各自的蒙版，
+      1. 皮肤路：磨皮/回注/匀肤/分区肤色/提亮/通透，贴皮肤蒙版 `mask`；
+      2. 五官轮廓带：眼/眉/鼻翼/唇缘的 1~2px 局部对比增强（不改形状）；
+      3. 眼神光：在合成后的亮度上做局部锐化 + 角膜反光提亮，贴眼/眉蒙版；
+      4. 唇色、牙齿：各自的 `_local_lab_edit`，贴自己的蒙版。
+    皮肤蒙版天然抠掉了眼/眉/唇，所以 2、3、4 必须走各自的蒙版，
     不能混进皮肤路一起乘 `mask`（那样会被整段丢弃）。
+
+    `debug`（可选）：传入 dict 时会把各阶段中间结果写进去，供
+    `apply_beautify(debug_dir=...)` 落盘做「哪一步导致不自然」的定位。
     """
     import cv2
 
@@ -1169,6 +1377,9 @@ def _retouch(bgr: np.ndarray, mask: np.ndarray, geo: _FaceGeometry, para: _Param
     smooth_w = para.smooth if do_smooth else 0.0
     blemish_w = para.blemish if do_blemish else 0.0
     chroma_w = para.chroma if do_smooth else 0.0
+    # 【解耦】分区肤色修正有自己的开关（para.tone / beautify_tone），
+    # 不挂在「磨皮」开关上：用户可能只想均匀肤色、不想磨皮。
+    tone_w = para.tone
 
     if smooth_w > 0.0:
         # 幅度门控：小起伏（毛孔/噪点）压掉，大起伏（褶皱/轮廓/痣）保留
@@ -1180,7 +1391,14 @@ def _retouch(bgr: np.ndarray, mask: np.ndarray, geo: _FaceGeometry, para: _Param
         # 现在 fine_keep 是**保留率下限**：平坦皮肤压掉 smooth_w（≤15%），
         # 强起伏按 gate 平滑回落到 100% 保留，红线口径与文档一致。
         atten = np.maximum(1.0 - smooth_w * (1.0 - gate), para.fine_keep)
-        high = high * atten
+        high_kept = high * atten
+        # ⑧ 纹理回注：把「磨皮拿走的毛孔级细节」按比例补回平坦皮肤。
+        # 强边（|high| 很大）本来就没被压，removed 接近 0，自然不会回注；
+        # 再用 gate 反向门控，保证不会把睫毛/鼻翼拉出白边。
+        removed = high - high_kept
+        # guard 用「弱边才回注」：强边处 atten≈1、removed≈0，本来就无需回注，
+        # 这里再乘一次 (1-gate) 只是防止数值噪声被放大成白边。
+        high = high_kept + _texture_reinject(removed, 1.0 - 0.5 * gate, para.texture)
 
     if blemish_w > 0.0:
         # ② 分区 + 双层结构保护：
@@ -1222,6 +1440,27 @@ def _retouch(bgr: np.ndarray, mask: np.ndarray, geo: _FaceGeometry, para: _Param
         low = _guided_1(base_mid, base_mid, _scale(geo.iod, 0.30, 4), _EPS_CLARITY)
         l_out = l_out + para.clarity * (base_mid - low)
 
+    # ⑦ 分区域低频肤色修正：把额头/两颊/下颌/脖子的**区域色偏**拉向整脸参考肤色.
+    # 【为什么放在提亮之后】提亮会整体抬 L，先提亮再按「区域相对参考值」修正，
+    # 才能保证修正量衡量的是「区域之间的差」而不是「整体亮度」；
+    # 也避免修正量被后面的整体抬升再次拉开。
+    tone_shift = None
+    if tone_w > 0.0:
+        # 用**磨皮之后**的 L 统计（斑点已被压掉，中位数更能代表区域肤色），
+        # 色度用当前 a/b（匀肤前的原值即可 —— 区域色偏本就属于低频）。
+        lab_tone = np.stack([
+            np.clip(l_out, 0.0, 255.0),
+            np.clip(a_chan + 128.0, 0.0, 255.0),
+            np.clip(b_chan + 128.0, 0.0, 255.0),
+        ], axis=-1).astype(np.float32)
+        tone_shift = _tone_shift_map(lab_tone, mask)
+        if tone_shift is not None:
+            l_out = l_out + tone_w * tone_shift[:, :, 0]
+            a_chan = a_chan + tone_w * tone_shift[:, :, 1]
+            b_chan = b_chan + tone_w * tone_shift[:, :, 2]
+            if debug is not None:
+                debug["tone_shift"] = tone_shift
+
     # 色度匀肤：LAB 的 a/b 大幅平滑，去掉红斑与肤色斑块（只作用于皮肤路）。
     # 【蒙版加权平滑】先按皮肤蒙版加权求均值再平滑、除回平滑后的权重和：
     # 裸 blur 会把发际线/下颌缘过渡带里头发与背景的色度混进皮肤
@@ -1252,6 +1491,26 @@ def _retouch(bgr: np.ndarray, mask: np.ndarray, geo: _FaceGeometry, para: _Param
     m3 = mask[..., None]
     out = np.clip(bgr.astype(np.float32) * (1.0 - m3) + retouched * m3,
                   0.0, 255.0).astype(np.uint8)
+    if debug is not None:
+        debug["skin"] = out.copy()
+
+    # ⑨ 五官轮廓带局部增强：只在眼/眉/鼻翼/唇缘的描边带上做 1~2px 局部对比，
+    # 让「眼睛、眉毛、鼻翼边缘更清楚」。不改形状、不改位置、不动瞳孔颜色。
+    # 【为什么放在合成之后】它作用于**皮肤与五官的交界**，如果放进皮肤路会被
+    # 皮肤蒙版乘掉（交界处 mask≈0），必须独立贴自己的蒙版。
+    if do_sharpen and para.feature > 0.0 and feature_band is not None:
+        sigma_f = float(np.clip(r_fine * 0.22, 0.7, 1.6))
+
+        def _feature_edit(l, a, b, m):
+            detail = l - cv2.GaussianBlur(l, (0, 0), sigma_f)
+            # 只增强有意义的轮廓（>4 级），噪点与羽化带不进入增强区
+            boost = _ramp(np.abs(detail), 4.0, 16.0)
+            # 有效强度 = min(feature, 红线 6%)：boost 已归一到 [0,1]，
+            # 所以峰值增益就是 COMPLIANT_MAX_FEATURE_SHARPEN。
+            l = l + min(COMPLIANT_MAX_FEATURE_SHARPEN, para.feature) * boost * detail
+            return l, a, b
+
+        out = _local_lab_edit(out, feature_band, _feature_edit)
 
     # 眼神光：在**合成后**的亮度上做局部锐化 + 角膜反光提亮，只贴眼/眉蒙版
     if do_sharpen and para.sharpen > 0.0 and eye_mask is not None:
@@ -1305,6 +1564,55 @@ def _retouch(bgr: np.ndarray, mask: np.ndarray, geo: _FaceGeometry, para: _Param
     return out
 
 
+def _dump_stage_images(dump_dir: str, bgr: np.ndarray, mask: np.ndarray,
+                       feature_band: Optional[np.ndarray], debug: dict,
+                       out: np.ndarray) -> None:
+    """把美颜各阶段中间结果落盘（评测/调试专用，生产不调用）.
+
+    产物（与 PRD 的验收口径一一对应）：
+      skin_mask.png  皮肤蒙版（红叠色）：确认「磨到了哪里」
+      smooth.png     磨皮+纹理回注后的结果（无分区肤色/无局部增强）
+      tone.png       分区肤色修正量可视化（红=拉暖/提亮，蓝=压暗）
+      feature.png    五官轮廓带蒙版：确认「五官保护/增强落在哪」
+      final.png      最终结果
+    只用于「哪一步导致不自然」的定位，不参与生产出图。
+    """
+    import cv2
+
+    os.makedirs(dump_dir, exist_ok=True)
+
+    def _write(name: str, img: np.ndarray) -> None:
+        try:
+            cv2.imwrite(os.path.join(dump_dir, name), img)
+        except Exception as e:  # noqa: BLE001 —— 调试落盘失败绝不能影响出图
+            logger.warning(f"dump {name} failed: {e}")
+
+    vis = bgr.astype(np.float32).copy()
+    vis[..., 2] = np.clip(vis[..., 2] + 140.0 * np.clip(mask, 0.0, 1.0), 0, 255)
+    _write("skin_mask.png", vis.astype(np.uint8))
+
+    if debug.get("skin") is not None:
+        _write("smooth.png", np.ascontiguousarray(debug["skin"]))
+
+    shift = debug.get("tone_shift")
+    if shift is not None:
+        # 修正量可视化：a 通道放大后映射到红/蓝，便于看「哪块被拉向参考肤色」
+        amt = np.clip(shift[:, :, 1] / max(COMPLIANT_MAX_TONE_SHIFT_A, 1e-6), -1.0, 1.0)
+        tone_vis = bgr.astype(np.float32).copy()
+        pos = np.clip(amt, 0, 1)[..., None]
+        neg = np.clip(-amt, 0, 1)[..., None]
+        tone_vis = tone_vis * (1 - 0.35 * pos) + np.array([60, 60, 255], np.float32) * (0.35 * pos)
+        tone_vis = tone_vis * (1 - 0.35 * neg) + np.array([255, 120, 60], np.float32) * (0.35 * neg)
+        _write("tone.png", np.clip(tone_vis, 0, 255).astype(np.uint8))
+
+    if feature_band is not None:
+        fv = bgr.astype(np.float32).copy()
+        fv[..., 1] = np.clip(fv[..., 1] + 160.0 * np.clip(feature_band, 0.0, 1.0), 0, 255)
+        _write("feature.png", fv.astype(np.uint8))
+
+    _write("final.png", np.ascontiguousarray(out))
+
+
 # ============================================================ 对外接口
 
 def apply_beautify(
@@ -1318,6 +1626,10 @@ def apply_beautify(
     adaptive: bool = True,
     smooth_operator: str = SMOOTH_OPERATOR,
     strength: float = 1.0,
+    tone: bool = True,
+    texture: bool = True,
+    feature: bool = True,
+    debug_dir: Optional[str] = None,
 ) -> Image.Image:
     """
     对图片应用美颜处理（FaceLandmarker + 频率分离 + 表面模糊）.
@@ -1337,8 +1649,16 @@ def apply_beautify(
         adaptive:  ★ 是否按肤质/曝光/清晰度/人脸占比自适应缩放强度（默认 True）
         smooth_operator: 磨皮基底算子，"surface"=表面模糊（默认）/"guided"=引导滤波
         strength:  ★ 用户「还原度」滑杆（0~1，默认 1=完整档位）。只缩放减法类轴
-                   （磨皮/去瑕疵/匀肤/去油光/提亮/锐化），fine_keep 随之反向抬升；
-                   在红线钳制之后做纯减法，结果必然仍在红线内。0 = 完全还原原图。
+                   （磨皮/去瑕疵/匀肤/去油光/提亮/锐化/分区肤色），fine_keep 随之
+                   反向抬升；在红线钳制之后做纯减法，结果必然仍在红线内。
+                   0 = 完全还原原图。
+        tone:      ★ ⑦ 分区域低频肤色修正（额头/两颊/下颌/脖子各自拉向参考肤色）
+        texture:   ★ ⑧ 纹理回注（把磨皮拿走的毛孔细节按比例补回，防塑料感）
+        feature:   ★ ⑨ 五官轮廓带局部增强（眼/眉/鼻翼/唇缘，不改形状不改位置）
+        debug_dir: ★ 传入目录时落盘各阶段中间结果，便于定位「哪一步导致不自然」：
+                   skin_mask.png / smooth.png / tone.png / feature.png / final.png
+                   （对应 PRD 里「保存各中间结果」的评测要求）。生产路径默认 None，
+                   不做任何额外编码，零开销。
 
     返回:
         PIL.Image 美颜后的图片；未检测到人脸时降级处理，
@@ -1372,6 +1692,13 @@ def apply_beautify(
             gamma=para.gamma,
             clarity=para.clarity * s,
             sharpen=para.sharpen * s,
+            # 分区肤色同样属于「减法类」轴：强度滑杆拉低时同步减弱，
+            # 否则「还原度 0%」时区域色差修正仍在生效，与「完全还原原图」矛盾。
+            tone=para.tone * s,
+            # 纹理回注与五官增强不是「改动」而是「找回细节」，不随滑杆归零：
+            # 滑杆=0 时磨皮本身也归零，回注量随之自然为 0（removed≈0）。
+            texture=para.texture,
+            feature=para.feature * s,
         )
 
     started = time.perf_counter()
@@ -1385,6 +1712,7 @@ def apply_beautify(
     lips_mask: Optional[np.ndarray] = None
     teeth_mask: Optional[np.ndarray] = None
     structure_protect: Optional[np.ndarray] = None
+    feature_band: Optional[np.ndarray] = None
     if faces:
         mask, geo = _landmark_region_mask(bgr, faces, parse_skin)
         mode = "landmark"
@@ -1395,6 +1723,9 @@ def apply_beautify(
                 lips_mask, teeth_mask = lm_result
             # ② 第二层子蒙版：鼻侧影/法令纹/泪沟/眉骨/下颌线的点名保护
             structure_protect = _structure_protect_landmarks(bgr, faces, geo)
+            # ⑨ 五官轮廓带：眼/眉/鼻翼/唇缘的描边带（局部增强用）
+            if feature:
+                feature_band = _feature_band_mask(bgr, faces, geo)
     else:
         mask, geo = _fallback_region(bgr, parse_skin)
         mode = "fallback"
@@ -1411,12 +1742,26 @@ def apply_beautify(
         if compliant:
             para = _clamp_compliant(para)
 
+    # ⑦⑧⑨ 三个开关：关掉对应轴即退回「整脸滤镜」旧行为（便于 A/B 与一键回滚）
+    if not (tone and texture and feature):
+        para = _Params(
+            smooth=para.smooth, fine_keep=para.fine_keep, blemish=para.blemish,
+            chroma=para.chroma, shine=para.shine, brighten=para.brighten,
+            gamma=para.gamma, clarity=para.clarity, sharpen=para.sharpen,
+            tone=para.tone if tone else 0.0,
+            texture=para.texture if texture else 0.0,
+            feature=para.feature if feature else 0.0,
+        )
+
+    debug: Optional[dict] = {} if debug_dir else None
     out = _retouch(bgr, mask, geo, para, eye_mask,
                    do_smooth=smooth, do_blemish=blemish,
                    do_brighten=brighten, do_sharpen=sharpen,
                    lips_mask=lips_mask, teeth_mask=teeth_mask,
                    smooth_op=smooth_operator,
-                   structure_protect=structure_protect)
+                   structure_protect=structure_protect,
+                   feature_band=feature_band,
+                   debug=debug)
 
     sel = mask > 0.4
     diff = float(np.mean(np.abs(out.astype(np.float32) - bgr.astype(np.float32))[sel])) \
@@ -1431,6 +1776,13 @@ def apply_beautify(
         f"adaptive={adaptive} strength={s:.2f} op={smooth_operator} "
         f"lips={'on' if lips_mask is not None else 'off'} "
         f"protect={'on' if structure_protect is not None else 'off'} "
+        f"tone={para.tone:.2f} texture={para.texture:.2f} feature={para.feature:.2f} "
         f"in {elapsed:.0f}ms"
     )
+
+    # 中间结果落盘（仅评测/调试路径）：对应「保存各中间结果」的验收要求，
+    # 生产调用方不传 debug_dir 时完全不执行。
+    if debug_dir:
+        _dump_stage_images(debug_dir, bgr, mask, feature_band, debug, out)
+
     return _cv2_to_pil(out)

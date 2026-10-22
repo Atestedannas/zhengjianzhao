@@ -361,6 +361,12 @@ export interface ProcessParams {
   beautify_smooth?: boolean
   beautify_brighten?: boolean
   beautify_blemish?: boolean
+  /** ⑦ 分区域低频肤色修正（额头/两颊/下颌/脖子各自拉向参考肤色） */
+  beautify_tone?: boolean
+  /** ⑧ 纹理回注（把磨皮拿走的毛孔细节按比例补回） */
+  beautify_texture?: boolean
+  /** ⑨ 五官轮廓带局部增强（眼/眉/鼻翼/唇缘，不改形状） */
+  beautify_feature?: boolean
   retouch_strength?: number
   id_photo_align?: boolean
   gender?: string
@@ -373,6 +379,12 @@ export type ProcessStatusValue = 'pending' | 'processing' | 'success' | 'failed'
 export interface ProcessResultFields {
   result_url?: string
   download_url?: string
+  /**
+   * 对比基线：与效果图**同裁剪 / 同缩放 / 同像素**的原图渲染。
+   * 前端做「按住看原图」「上下分屏」时必须用它，不能用上传原图 ——
+   * 上传原图的缩放比例与中心点和效果图不同，用户根本没法对比（历史致命 bug）。
+   */
+  baseline_url?: string | null
   file_size_kb?: number
   pixels?: string
   dpi?: number
@@ -406,6 +418,8 @@ export interface ProcessResult {
   record_id: number
   result_url: string
   download_url: string
+  /** 对比基线 URL（同几何原图）；空串表示后端未提供，前端回退到上传原图 */
+  baseline_url: string
   file_size_kb: number
   pixels: string
   dpi: number
@@ -435,6 +449,9 @@ export function processPhoto(file: File, params: ProcessParams): Promise<Process
   if (params.beautify_smooth !== undefined) formData.append('beautify_smooth', String(params.beautify_smooth))
   if (params.beautify_brighten !== undefined) formData.append('beautify_brighten', String(params.beautify_brighten))
   if (params.beautify_blemish !== undefined) formData.append('beautify_blemish', String(params.beautify_blemish))
+  if (params.beautify_tone !== undefined) formData.append('beautify_tone', String(params.beautify_tone))
+  if (params.beautify_texture !== undefined) formData.append('beautify_texture', String(params.beautify_texture))
+  if (params.beautify_feature !== undefined) formData.append('beautify_feature', String(params.beautify_feature))
   if (params.retouch_strength !== undefined) formData.append('retouch_strength', String(params.retouch_strength))
   if (params.id_photo_align !== undefined) formData.append('id_photo_align', String(params.id_photo_align))
   if (params.gender) formData.append('gender', params.gender)
@@ -481,6 +498,11 @@ export function getBgColors(): Promise<{ colors: BgColor[] }> {
 
 export function getPreviewUrl(recordId: number): string {
   return `/api/v1/process/${recordId}/preview`
+}
+
+/** 对比基线（同几何原图）的受保护路径 */
+export function getBaselineUrl(recordId: number): string {
+  return `/api/v1/process/${recordId}/baseline`
 }
 
 export function getDownloadUrl(recordId: number): string {

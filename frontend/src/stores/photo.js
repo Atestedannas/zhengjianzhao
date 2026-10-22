@@ -14,6 +14,17 @@ const POLL_MAX_ATTEMPTS = 120
 /** 轮询超时文案 */
 const POLL_TIMEOUT_MESSAGE = '处理时间较长，请稍后在历史记录中查看'
 
+// ===== 「生成照片」卡死的三道保险（与 PC 端同一套策略）=====
+// 用户反馈：点「开始处理」后一直转圈，无法进行下一步。根因是 loading 只依赖
+// 「请求自己结束」，只要有一个请求挂住就永远为 true。这里加三道互相独立的保险：
+//   1) 单次请求超时：提交 30s / 查询状态 10s；
+//   2) 客户端硬超时：90 秒到点强制解除 loading 并提示可重试；
+//   3) 用户主动取消：cancelProcess() 立刻停轮询 + 恢复按钮。
+const SUBMIT_TIMEOUT_MS = 30000
+const STATUS_TIMEOUT_MS = 10000
+const HARD_TIMEOUT_MS = 90000
+const HARD_TIMEOUT_MESSAGE = '处理超时（超过 90 秒未完成），已停止等待，请重试'
+
 // 轮询控制放在 store 外部，避免定时器被 pinia 代理包装
 let currentPollRun = null
 
@@ -26,6 +37,10 @@ function stopPollingRun() {
     clearTimeout(run.timer)
     run.timer = null
   }
+  if (run.deadline) {
+    clearTimeout(run.deadline)
+    run.deadline = null
+  }
   if (run.wake) {
     const wake = run.wake
     run.wake = null
@@ -37,9 +52,48 @@ function stopPollingRun() {
 /** 开始一轮新的轮询（会先取消旧的，避免重复请求） */
 function createPollRun() {
   stopPollingRun()
-  const run = { cancelled: false, timer: null, wake: null }
+  const run = {
+    cancelled: false,
+    timer: null,
+    wake: null,
+    deadline: null,
+    startedAt: Date.now(),
+    timedOut: false,
+  }
   currentPollRun = run
   return run
+}
+
+/**
+ * 给请求加「单次超时」：到点必定 reject，绝不无限挂起.
+ * uni.request 的 timeout 在部分平台（小程序真机）不生效，
+ * 这里用 Promise.race 兜住，保证 loading 一定会被解除。
+ */
+function withTimeout(promise, ms, message) {
+  return new Promise((resolve, reject) => {
+    let settled = false
+    const timer = setTimeout(() => {
+      if (settled) return
+      settled = true
+      const err = new Error(message)
+      err.timeout = true
+      reject(err)
+    }, ms)
+    promise.then(
+      (v) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        resolve(v)
+      },
+      (e) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        reject(e)
+      },
+    )
+  })
 }
 
 /** 可被取消立即打断的间隔等待 */
@@ -152,9 +206,28 @@ export const usePhotoStore = defineStore('photo', {
     async processPhoto(filePath) {
       const run = createPollRun()
       this.isProcessing = true
+
+      // 【第二道保险】客户端硬超时：到点强制解除 loading（不依赖任何请求回调）
+      run.deadline = setTimeout(() => {
+        if (run.cancelled) return
+        run.timedOut = true
+        if (run.wake) {
+          const wake = run.wake
+          run.wake = null
+          wake()
+        }
+        this.isProcessing = false
+      }, HARD_TIMEOUT_MS)
+
       try {
         const params = this.effectiveParams
-        const res = await apiProcessPhoto(filePath, params)
+        // 【第一道保险】提交请求 30 秒上限
+        const res = await withTimeout(
+          apiProcessPhoto(filePath, params),
+          SUBMIT_TIMEOUT_MS,
+          '提交超时（30 秒未响应），请检查网络后重试',
+        )
+        if (run.timedOut) throw pollError(HARD_TIMEOUT_MESSAGE, true)
 
         if (res.code === 402) {
           this.isProcessing = false
@@ -197,6 +270,11 @@ export const usePhotoStore = defineStore('photo', {
           uni.showToast({ title: e.message, icon: 'none' })
           return { success: false, message: e.message, timeout: !!e.timeout }
         }
+        // 单次请求超时（提交/查询）：同样要给用户明确的可重试提示
+        if (e && e.timeout) {
+          uni.showToast({ title: e.message || '请求超时，请重试', icon: 'none' })
+          return { success: false, message: e.message, timeout: true }
+        }
         uni.showToast({ title: '处理失败，请重试', icon: 'none' })
         return { success: false, message: e.message }
       } finally {
@@ -233,10 +311,19 @@ export const usePhotoStore = defineStore('photo', {
      */
     async pollResult(run, submit) {
       for (let attempt = 0; attempt < POLL_MAX_ATTEMPTS; attempt++) {
+        if (run.cancelled) throw cancelledError()
+        if (run.timedOut) throw pollError(HARD_TIMEOUT_MESSAGE, true)
+
         await waitInterval(run)
         if (run.cancelled) throw cancelledError()
+        if (run.timedOut) throw pollError(HARD_TIMEOUT_MESSAGE, true)
 
-        const res = await getProcessStatus(submit.record_id)
+        // 单次状态查询也要有超时：链路卡住时不能把整轮等待一起拖死
+        const res = await withTimeout(
+          getProcessStatus(submit.record_id),
+          STATUS_TIMEOUT_MS,
+          '查询处理状态超时，请重试',
+        )
         if (run.cancelled) throw cancelledError()
 
         const data = (res && res.data) || {}
@@ -263,6 +350,14 @@ export const usePhotoStore = defineStore('photo', {
      * 停止轮询（页面卸载 / 重新提交 / 用户取消时调用）
      */
     cancelPolling() {
+      stopPollingRun()
+      this.isProcessing = false
+    },
+
+    /**
+     * 用户主动取消：立刻停轮询 + 恢复按钮（后端任务可能仍在跑，历史记录里能看到）
+     */
+    cancelProcess() {
       stopPollingRun()
       this.isProcessing = false
     },

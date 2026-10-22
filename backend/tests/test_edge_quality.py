@@ -3,6 +3,7 @@
 运行:
     python backend/tests/test_edge_quality.py
 """
+import io
 import os
 import sys
 
@@ -159,6 +160,62 @@ def test_quality_warnings():
     print(f"  [OK] quality warnings: std={len(w)} 未指定={len(w2)} 低清={len(w3)}")
 
 
+
+
+def test_baseline_matches_result_geometry():
+    """对比基线必须与效果图**逐像素同几何**（这是对比可信的唯一前提）.
+
+    回归点：旧实现前端拿「上传原片」跟「裁剪+对齐+缩放后的结果」并排，
+    两张图比例/中心点/缩放全不同，用户看到的第一眼永远是「右边脸怎么这么大」。
+    现在由后端用同一条几何链路渲染基线，两者必须：
+      1) 像素尺寸完全相同；
+      2) 基线 == 「只关美颜、只关换底」的同一流水线输出（几何不可能跑偏）；
+      3) 基线不做美颜（与效果图存在真实差异，否则对比没有意义）。
+    """
+    from PIL import Image, ImageDraw
+    from app.core.image_engine import pipeline as P
+
+    W0, H0 = 900, 1200
+    img = Image.new("RGB", (W0, H0), (198, 178, 165))
+    d = ImageDraw.Draw(img)
+    d.ellipse((W0 // 4, H0 // 7, W0 * 3 // 4, H0 // 2), fill=(236, 205, 182))
+    d.rectangle((W0 // 3, H0 // 2, W0 * 2 // 3, H0 * 5 // 6), fill=(60, 80, 140))
+
+    params = P.ProcessParams(
+        width=295, height=413, resize_mode="crop", upscale=True,
+        dpi=300, min_kb=0, max_kb=100, bg_color="keep", output_format="JPEG",
+        beautify_level=BT.BeautyLevel.COMPLIANT, retouch_strength=0.7,
+    )
+
+    result = P.process_image(img, params)
+    baseline = P.render_baseline(img, params)
+
+    assert baseline.result_pixels == result.result_pixels, (
+        f"基线/结果像素不一致: {baseline.result_pixels} vs {result.result_pixels}"
+    )
+    assert baseline.result_dpi == result.result_dpi
+
+    # 基线必须等价于「美颜关 + 背景 keep」的同一流水线（几何同源）
+    from dataclasses import replace
+    expect = P.process_image(img, replace(params, beautify_level=0, bg_color="keep"))
+    b = np.array(Image.open(io.BytesIO(baseline.data)).convert("RGB"), dtype=np.float32)
+    e = np.array(Image.open(io.BytesIO(expect.data)).convert("RGB"), dtype=np.float32)
+    assert b.shape == e.shape, f"基线几何与「关美颜」输出不一致: {b.shape} vs {e.shape}"
+    diff = float(np.mean(np.abs(b - e)))
+    assert diff < 1.0, f"基线与「关美颜」输出差异过大（几何不同源）: {diff:.2f}"
+
+    # 基线与效果图的差异：合成图没有人脸，美颜会走「无人脸直接返回」分支，
+    # 此时两者本就相同 —— 这里只在检测到人脸（美颜真的生效）时才要求有差异，
+    # 避免把「合成图没人脸」误判成「基线做错了」。
+    r = np.array(Image.open(io.BytesIO(result.data)).convert("RGB"), dtype=np.float32)
+    beauty_diff = float(np.mean(np.abs(b - r)))
+    if result.faces_detected > 0:
+        assert beauty_diff > 0.0, "基线等于效果图，美颜没有生效"
+    print(f"  [OK] baseline geometry: {baseline.result_pixels} 与结果严格同尺寸，"
+          f"与「关美颜」输出差异 {diff:.3f} 级，与效果图差异 {beauty_diff:.3f} 级 "
+          f"(faces={result.faces_detected})")
+
+
 if __name__ == "__main__":
     print("=== 证件照出图质量红线烟雾测试 ===")
     for fn in (
@@ -169,6 +226,7 @@ if __name__ == "__main__":
         test_compose_red_lines,
         test_align_face_composition_measured,
         test_quality_warnings,
+        test_baseline_matches_result_geometry,
     ):
         print(f"[{fn.__name__}]")
         fn()

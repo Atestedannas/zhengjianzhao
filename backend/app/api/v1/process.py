@@ -66,6 +66,10 @@ async def process_photo(
     beautify_brighten: bool = Form(True),
     beautify_blemish: bool = Form(True),
     beautify_adaptive: bool = Form(True),
+    # 分区域处理系统的三个开关（默认全开；关掉即回到「整脸滤镜」的旧行为）
+    beautify_tone: bool = Form(True),
+    beautify_texture: bool = Form(True),
+    beautify_feature: bool = Form(True),
     retouch_strength: float = Form(1.0),
     # === 证件照 ===
     id_photo_align: bool = Form(False),
@@ -197,6 +201,9 @@ async def process_photo(
         beautify_brighten=beautify_brighten,
         beautify_blemish=beautify_blemish,
         beautify_adaptive=beautify_adaptive,
+        beautify_tone=beautify_tone,
+        beautify_texture=beautify_texture,
+        beautify_feature=beautify_feature,
         retouch_strength=retouch_strength,
         id_photo_align=id_photo_align,
         gender=gender if gender and gender != "None" else None,
@@ -261,6 +268,8 @@ async def process_photo(
             "status_url": f"/api/v1/process/{record.id}/status",
             "result_url": f"/api/v1/process/{record.id}/preview",
             "download_url": f"/api/v1/process/{record.id}/download",
+            # 提交阶段还没有基线；轮询到 success 后由 /status 带回
+            "baseline_url": None,
             "free_used": billing_result["free_used"],
             # 无限次数时业务层会返回 -1（前端显示为 ∞）；.get 兜底避免 KeyError 500
             "remaining_free_count": billing_result.get("remaining_free_count", current_user.free_count),
@@ -293,7 +302,7 @@ async def get_process_status(
         raise HTTPException(status_code=404, detail="Record not found.")
 
     raw_params = record.request_params if isinstance(record.request_params, dict) else {}
-    meta = raw_params.get("_result") if isinstance(raw_params.get("_result"), dict) else {}
+    meta = _result_meta(record)
 
     # 输出格式以实际落盘文件为准（格式转换可能回退）
     _, ext = os.path.splitext(record.thumb_path or "")
@@ -320,6 +329,12 @@ async def get_process_status(
             "error": record.error_message if record.status == "failed" else None,
             "result_url": f"/api/v1/process/{record.id}/preview",
             "download_url": f"/api/v1/process/{record.id}/download",
+            # 对比基线：与效果图同几何的原图渲染；没有时为 None，前端回退到上传原图
+            "baseline_url": (
+                f"/api/v1/process/{record.id}/baseline"
+                if meta.get("baseline_path") and os.path.exists(meta["baseline_path"])
+                else None
+            ),
             "file_size_kb": round((record.result_size or 0) / 1024, 1),
             "pixels": record.result_pixels,
             "dpi": record.result_dpi,
@@ -382,6 +397,50 @@ async def get_bg_colors(
             ],
         },
     )
+
+
+def _result_meta(record: ProcessRecord) -> dict:
+    """从记录里取 _result 快照（结果元信息：warnings/格式/基线路径等）."""
+    raw = record.request_params if isinstance(record.request_params, dict) else {}
+    meta = raw.get("_result")
+    return meta if isinstance(meta, dict) else {}
+
+
+@router.get("/{record_id}/baseline")
+async def baseline_result(
+    record_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """获取「对比基线」：与效果图**同裁剪/同缩放/同像素**的原图.
+
+    【为什么需要这个接口】前端对比「原图 / 效果图」时，如果左边放的是用户
+    上传的原始照片、右边放的是「裁剪 + 对齐 + 缩放」后的结果，两张图的缩放
+    比例与中心点天然不同 —— 用户看到的第一眼永远是「右边脸怎么这么大」，
+    根本没法判断美颜效果。这个接口返回的是后端用**同一条几何链路**重新渲染
+    的原图（只关掉美颜与换底），所以两张图逐像素对齐，差异只剩美颜本身。
+
+    没有基线（没开美颜 / 基线渲染失败 / 老记录）时返回 404，前端自动回退到
+    上传原图做对比（并提示几何可能不一致）。
+    """
+    result = await db.execute(
+        select(ProcessRecord).where(
+            ProcessRecord.id == record_id,
+            ProcessRecord.user_id == current_user.id,
+        )
+    )
+    record = result.scalar()
+    if record is None:
+        raise HTTPException(status_code=404, detail="Record not found.")
+    if record.status != "success":
+        raise HTTPException(status_code=409, detail="照片还在处理中，请稍候再试")
+
+    path = _result_meta(record).get("baseline_path")
+    if not path or not os.path.exists(path):
+        raise HTTPException(status_code=404, detail="Baseline not available.")
+
+    mime_type = "image/png" if str(path).lower().endswith(".png") else "image/jpeg"
+    return FileResponse(path, media_type=mime_type)
 
 
 @router.get("/{record_id}/preview")

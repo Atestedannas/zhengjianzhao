@@ -21,7 +21,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.config import settings
 from app.core.billing import refund_free_count
-from app.core.image_engine.pipeline import ProcessParams, process_image
+from app.core.image_engine.pipeline import ProcessParams, process_image, render_baseline
 from app.core.image_engine.validator import validate_image
 from app.models.process_record import ProcessRecord
 from app.utils.file_utils import generate_unique_filename, safe_delete_temp_file
@@ -105,6 +105,7 @@ async def run_process_record(record_id: int) -> dict:
         # ---------- 第二阶段：跑流水线（不占着数据库连接） ----------
         result = None
         temp_path = None
+        baseline_path = None
         result_meta = None
         error = None
         try:
@@ -118,6 +119,17 @@ async def run_process_record(record_id: int) -> dict:
             # 同步 CPU 重活丢到线程里跑，别卡住事件循环（worker 也需要能响应信号）
             result = await asyncio.to_thread(process_image, image, params)
             temp_path = _save_result(result)
+
+            # 对比基线：与效果图**同裁剪/同缩放/同像素**的原图渲染，
+            # 供前端做「按住看原图」与「上下分屏」对比。
+            # 只在真的做了美颜时才需要（没美颜时原图就是结果，没必要多跑一遍）。
+            if params.beautify_level > 0:
+                try:
+                    baseline = await asyncio.to_thread(render_baseline, image, params)
+                    baseline_path = _save_result(baseline)
+                except Exception as e:  # noqa: BLE001 —— 基线失败不能影响主结果
+                    logger.warning(f"ProcessRecord {record_id} 基线渲染失败（不影响出图）: {e}")
+                    baseline_path = None
             # 出图质量提示（warnings / 人脸数 / 实际格式）没有独立的列，
             # 统一塞进 request_params 快照的 _result 键，供 /status 接口回给前端
             result_meta = {
@@ -126,6 +138,8 @@ async def run_process_record(record_id: int) -> dict:
                 "output_format": result.output_format,
                 "mime_type": result.mime_type,
                 "file_size_kb": round(result.result_size_kb, 1),
+                # 对比基线的实际落盘路径（前端通过 /baseline 接口取图）
+                "baseline_path": baseline_path,
             }
             logger.info(
                 f"ProcessRecord {record_id} 处理完成: {result.result_pixels} "
@@ -151,6 +165,8 @@ async def run_process_record(record_id: int) -> dict:
                     )
                     if temp_path:
                         safe_delete_temp_file(temp_path)
+                    if baseline_path:
+                        safe_delete_temp_file(baseline_path)
                     status = record.status
                 else:
                     record.status = "success"

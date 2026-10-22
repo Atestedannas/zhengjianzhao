@@ -366,6 +366,230 @@ def test_landmark_protect_spares_structure():
           f"脸颊={float(prot[int(0.60 * h), int(0.20 * w)]):.2f}")
 
 
+
+
+# ============================================================ 分区域处理系统（⑦⑧⑨）
+
+def _toned_face():
+    """合成一张「同一张脸上有区域色差」的图：额头偏黄、两颊偏红、下颌偏暗.
+
+    直接在 LAB 空间构造，这样 a/b 的方向是确定的（OpenCV 的 LAB 是 0~255，
+    a/b 以 128 为中点），不依赖 BGR 与 LAB 之间的换算方向猜测。
+
+    这正是证件照最常见的脏感来源 —— 低频区域色差，磨皮/匀肤都修不掉。
+    返回 (bgr, mask, geo, lab)。
+    """
+    h, w = 400, 320
+    rng = np.random.default_rng(33)
+    lab = np.zeros((h, w, 3), np.float32)
+    lab[:, :, 0] = 190.0     # 皮肤亮度
+    lab[:, :, 1] = 136.0     # a：略偏红（皮肤）
+    lab[:, :, 2] = 150.0     # b：略偏黄（皮肤）
+
+    # 额头带：更黄（b +10）、更亮（L +6）
+    lab[60:140, :, 0] += 6.0
+    lab[60:140, :, 2] += 10.0
+    # 两颊带：更红（a +9）
+    lab[200:300, :, 1] += 9.0
+    # 下颌带：更暗（L -18）
+    lab[320:400, :, 0] -= 18.0
+
+    # 加一点毛孔级纹理，避免磨皮统计落在量化噪声地板上
+    tex = rng.normal(0.0, 1.0, (h, w)).astype(np.float32)
+    tex = cv2.GaussianBlur(tex, (0, 0), 0.7)
+    tex *= 5.0 / max(1e-3, float(tex.std()))
+    lab[:, :, 0] += tex
+
+    lab_u8 = np.clip(lab, 0, 255).astype(np.uint8)
+    bgr = cv2.cvtColor(lab_u8, cv2.COLOR_LAB2BGR)
+
+    mask = np.zeros((h, w), np.float32)
+    mask[40:380, 40:280] = 1.0
+    geo = BT._FaceGeometry(cx=w / 2.0, cy=210.0, width=220.0, height=320.0, iod=70.0)
+    lab_f = cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB).astype(np.float32)
+    return bgr, mask, geo, lab_f
+
+
+def test_tone_shift_map_reduces_regional_bias():
+    """分区域肤色修正必须真的把「区域色差」拉小，且不整体改肤色."""
+    bgr, mask, geo, lab = _toned_face()
+    shift = BT._tone_shift_map(lab, mask)
+    assert shift is not None, "分区肤色修正量未生成"
+    assert shift.shape[:2] == mask.shape
+
+    # 1) 预算约束：任何像素都不得越过红线
+    assert float(shift[..., 0].min()) >= -BT.COMPLIANT_MAX_TONE_SHIFT_L - 1e-3
+    assert float(shift[..., 0].max()) <= BT.COMPLIANT_MAX_TONE_SHIFT_L + 1e-3
+    assert float(shift[..., 1].min()) >= -BT.COMPLIANT_MAX_TONE_SHIFT_A - 1e-3
+    assert float(shift[..., 1].max()) <= BT.COMPLIANT_MAX_TONE_SHIFT_A + 1e-3
+    assert float(shift[..., 2].min()) >= -BT.COMPLIANT_MAX_TONE_SHIFT_B - 1e-3
+    assert float(shift[..., 2].max()) <= BT.COMPLIANT_MAX_TONE_SHIFT_B + 1e-3
+
+    # 2) 方向正确：偏黄的额头要被「减黄」（b 修正为负），偏红的两颊要被「降红」
+    #    （a 修正为负），偏暗的下颌要被提亮（L 修正为正）。
+    #    行号换算：额头 y≈100，两颊 y≈250，下颌 y≈360。
+    def at(y, x=160):
+        return shift[y, x]
+
+    assert at(100)[2] < -0.5, f"额头偏黄未被减黄: {at(100)[2]:.2f}"
+    assert at(250)[1] < -0.3, f"两颊偏红未被降红: {at(250)[1]:.2f}"
+    assert at(360)[0] > 0.5, f"下颌偏暗未被提亮: {at(360)[0]:.2f}"
+
+    # 3) 整脸平均修正应接近 0（只允许「区域内更一致」，不允许整体改肤色）
+    sel = mask > 0.5
+    mean_shift = float(np.mean(np.abs(shift[..., 1][sel])))
+    assert mean_shift <= BT.COMPLIANT_MAX_TONE_SHIFT_A, f"整脸平均色偏修正过大: {mean_shift:.2f}"
+    print(f"  [OK] tone shift: 额头 Δb={at(100)[2]:+.2f} 两颊 Δa={at(250)[1]:+.2f} "
+          f"下颌 ΔL={at(360)[0]:+.2f}")
+
+
+def test_tone_correction_reduces_regional_variance():
+    """端到端：开启分区肤色修正后，区域中位数的离散度必须下降."""
+    bgr, mask, geo, lab = _toned_face()
+    para = BT._clamp_compliant(BT._PARAMS[BT.BeautyLevel.COMPLIANT])
+
+    def regional_spread(lab_img):
+        """三个区域各自的中位数之间的标准差 = 同一张脸内的「色差幅度」."""
+        bands = [(60, 140), (200, 300), (320, 400)]
+        meds = []
+        for y0, y1 in bands:
+            sub = lab_img[y0:y1]
+            sub_mask = mask[y0:y1] > 0.5
+            meds.append([float(np.median(sub[:, :, c][sub_mask])) for c in range(3)])
+        return float(np.mean(np.std(np.array(meds), axis=0)))
+
+    before = regional_spread(lab)
+    # 只开分区肤色（关掉其它轴），单独观察它的贡献
+    p = BT._Params(smooth=0.0, fine_keep=0.92, blemish=0.0, chroma=0.0, shine=0.0,
+                   brighten=0.0, gamma=0.99, clarity=0.0, sharpen=0.0,
+                   tone=1.0, texture=0.0, feature=0.0)
+    out = BT._retouch(bgr, mask, geo, p, None, False, False, False, False)
+    after = regional_spread(cv2.cvtColor(out, cv2.COLOR_BGR2LAB).astype(np.float32))
+    assert after < before, f"分区肤色修正没有减小区域色差: {before:.2f} -> {after:.2f}"
+    print(f"  [OK] tone e2e: 区域色差 {before:.2f} -> {after:.2f}")
+
+
+def test_texture_reinject_restores_detail():
+    """纹理回注：开启后高频保留必须**上升**（细节被找回来），但仍低于原图."""
+    bgr, out_off, lab_i, lab_off, mask, eye, lips, teeth = _retouch_synth_with(texture=0.0)
+    bgr2, out_on, _, lab_on, *_ = _retouch_synth_with(texture=0.9)
+
+    sel = mask > 0.5
+    hf = lambda lab: float(np.sqrt(np.mean(cv2.Laplacian(lab[..., 0], cv2.CV_32F)[sel] ** 2)))
+    hf_in, hf_off, hf_on = hf(lab_i), hf(lab_off), hf(lab_on)
+
+    assert hf_off < hf_in, "基线（texture=0）没有磨皮效果"
+    assert hf_on > hf_off, f"纹理回注没有找回细节: {hf_off:.3f} -> {hf_on:.3f}"
+    assert hf_on < hf_in * 1.02, f"纹理回注过头（等于没磨皮）: {hf_on:.3f} vs {hf_in:.3f}"
+    print(f"  [OK] texture reinject: 高频 {hf_in:.2f} → {hf_off:.2f}(磨皮) → {hf_on:.2f}(回注)")
+
+
+def _retouch_synth_with(texture: float):
+    """合成样张 + 指定 texture 强度跑一遍 _retouch（供纹理回注单测使用）."""
+    bgr, mask, eye, lips, teeth, geo = _synth_face()
+    base = BT._clamp_compliant(BT._PARAMS[BT.BeautyLevel.COMPLIANT])
+    para = BT._Params(
+        smooth=base.smooth, fine_keep=base.fine_keep, blemish=base.blemish,
+        chroma=base.chroma, shine=base.shine, brighten=base.brighten,
+        gamma=base.gamma, clarity=base.clarity, sharpen=base.sharpen,
+        tone=0.0, texture=texture, feature=0.0,
+    )
+    out = BT._retouch(bgr, mask, geo, para, eye, True, True, True, True,
+                      lips_mask=lips, teeth_mask=teeth, smooth_op="surface")
+    lab_i = cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB).astype(np.float32)
+    lab_o = cv2.cvtColor(out, cv2.COLOR_BGR2LAB).astype(np.float32)
+    return bgr, out, lab_i, lab_o, mask, eye, lips, teeth
+
+
+def test_feature_band_covers_features_only():
+    """五官轮廓带：必须盖住眼/唇边缘，且不覆盖大片脸颊皮肤."""
+    bgr = np.zeros((320, 420, 3), np.uint8)
+    lm = _fake_face_landmarks()
+    geo = BT._FaceGeometry(cx=210.0, cy=166.0, width=150.0, height=170.0, iod=38.0)
+    band = BT._feature_band_mask(bgr, [lm], geo)
+    assert band is not None, "五官轮廓带未生成"
+    assert 0.0 <= float(band.min()) and float(band.max()) <= 1.0
+
+    # 脸颊外侧（无五官）应接近 0
+    cheek = float(band[int(0.62 * 320), int(0.16 * 420)])
+    assert cheek < 0.15, f"轮廓带误覆盖脸颊: {cheek:.2f}"
+    # 轮廓带能量应集中在五官附近：整体占比必须很小
+    ratio = float((band > 0.3).mean())
+    assert ratio < 0.20, f"轮廓带面积过大（{ratio:.1%}），会变成整脸锐化"
+    print(f"  [OK] feature band: 脸颊={cheek:.2f} 覆盖占比={ratio:.1%}")
+
+
+def test_apply_beautify_switches_off_revert():
+    """三个开关关掉后必须等价于旧行为（便于 A/B 与一键回滚）."""
+    from PIL import Image
+
+    rng = np.random.default_rng(5)
+    arr = np.full((300, 240, 3), 175, dtype=np.uint8)
+    arr[:, :, 0] = 150
+    arr = np.clip(arr.astype(np.int16) + rng.integers(-4, 5, arr.shape), 0, 255).astype(np.uint8)
+    pil = Image.fromarray(arr)
+
+    orig_parse, orig_det, orig_fb = BT._parse_skin_mask, BT._detect_all_landmarks, BT._fallback_region
+
+    def fake_region(bgr, parse_skin=None):
+        hh, ww = bgr.shape[:2]
+        m = np.zeros((hh, ww), dtype=np.float32)
+        m[30:hh - 30, 30:ww - 30] = 1.0
+        g = BT._FaceGeometry(cx=ww / 2, cy=hh / 2, width=ww * 0.5,
+                             height=hh * 0.6, iod=max(8.0, ww * 0.1))
+        return m, g
+
+    BT._parse_skin_mask = lambda bgr: None
+    BT._detect_all_landmarks = lambda bgr: []
+    BT._fallback_region = fake_region
+    try:
+        on = BT.apply_beautify(pil, level=BT.BeautyLevel.COMPLIANT)
+        off = BT.apply_beautify(pil, level=BT.BeautyLevel.COMPLIANT,
+                                tone=False, texture=False, feature=False)
+        d = float(np.mean(np.abs(np.array(on).astype(np.float32) - np.array(off).astype(np.float32))))
+        assert d > 0.0, "三个开关没有任何作用（新算子未生效）"
+        # 关掉后仍必须出图（回退路径可用）
+        assert off.size == pil.size
+        print(f"  [OK] switches: 开/关差异 {d:.3f} 级，回退路径可用")
+    finally:
+        BT._parse_skin_mask, BT._detect_all_landmarks, BT._fallback_region =             orig_parse, orig_det, orig_fb
+
+
+def test_debug_dump_stages(tmpdir=None):
+    """debug_dir 必须落盘各阶段中间结果（PRD 要求的可定位性）."""
+    import tempfile
+    from PIL import Image
+
+    rng = np.random.default_rng(9)
+    arr = np.full((260, 200, 3), 170, dtype=np.uint8)
+    arr[:, :, 0] = 145
+    arr = np.clip(arr.astype(np.int16) + rng.integers(-5, 6, arr.shape), 0, 255).astype(np.uint8)
+    pil = Image.fromarray(arr)
+
+    orig_parse, orig_det, orig_fb = BT._parse_skin_mask, BT._detect_all_landmarks, BT._fallback_region
+
+    def fake_region(bgr, parse_skin=None):
+        hh, ww = bgr.shape[:2]
+        m = np.zeros((hh, ww), dtype=np.float32)
+        m[20:hh - 20, 20:ww - 20] = 1.0
+        g = BT._FaceGeometry(cx=ww / 2, cy=hh / 2, width=ww * 0.5,
+                             height=hh * 0.6, iod=max(8.0, ww * 0.1))
+        return m, g
+
+    BT._parse_skin_mask = lambda bgr: None
+    BT._detect_all_landmarks = lambda bgr: []
+    BT._fallback_region = fake_region
+    d = tmpdir or tempfile.mkdtemp(prefix="beautify_dbg_")
+    try:
+        BT.apply_beautify(pil, level=BT.BeautyLevel.COMPLIANT, debug_dir=d)
+        names = set(os.listdir(d))
+        for need in ("skin_mask.png", "final.png"):
+            assert need in names, f"缺少中间结果 {need}: {sorted(names)}"
+        print(f"  [OK] debug dump: {sorted(names)}")
+    finally:
+        BT._parse_skin_mask, BT._detect_all_landmarks, BT._fallback_region =             orig_parse, orig_det, orig_fb
+
+
 if __name__ == "__main__":
     print("=== P0~P2 美颜增强离线回归 ===")
     for fn in (
@@ -379,6 +603,12 @@ if __name__ == "__main__":
         test_skin_smoothing_reaches_redline,
         test_endpoint_effects_survive_compositing,
         test_landmark_protect_spares_structure,
+        test_tone_shift_map_reduces_regional_bias,
+        test_tone_correction_reduces_regional_variance,
+        test_texture_reinject_restores_detail,
+        test_feature_band_covers_features_only,
+        test_apply_beautify_switches_off_revert,
+        test_debug_dump_stages,
     ):
         print(f"[{fn.__name__}]")
         fn()
