@@ -236,16 +236,40 @@
               />
 
               <template v-if="beautifyOn">
-                <h4 class="setting-title sub-title">美颜强度（还原度）</h4>
-                <el-slider
-                  v-model="strengthPercent"
-                  :min="0"
-                  :max="100"
-                  :step="5"
-                  :marks="{ 0: '原图', 40: '轻修', 100: '精修' }"
-                />
-                <p class="compliance-note">
-                  当前强度 {{ strengthPercent }}%（推荐 40% 轻修，以真实为主）；
+                <!-- 强度滑杆.
+                     【为什么去掉 marks】el-slider 的 marks 是 position:absolute +
+                     margin-top:15px + translateX(-50%) 的绝对定位文字，既会溢出到
+                     滑杆两侧（0% 的「原图」被裁掉一半），又会和下面的说明文字重叠
+                     （截图里的压字就是它）。改成「标题行显示当前值 + 三个可点预设按钮」，
+                     全部是正常文档流，几何上不可能再互相覆盖。 -->
+                <div class="slider-block">
+                  <div class="slider-head">
+                    <h4 class="setting-title sub-title">美颜强度（还原度）</h4>
+                    <span class="slider-value">{{ strengthPercent }}%</span>
+                  </div>
+                  <div class="slider-wrap">
+                    <el-slider
+                      v-model="strengthPercent"
+                      :min="0"
+                      :max="100"
+                      :step="5"
+                      :show-tooltip="true"
+                    />
+                  </div>
+                  <div class="slider-presets">
+                    <el-button
+                      v-for="preset in STRENGTH_PRESETS"
+                      :key="preset.value"
+                      size="small"
+                      :type="strengthPercent === preset.value ? 'primary' : 'default'"
+                      @click="strengthPercent = preset.value"
+                    >
+                      {{ preset.label }}
+                    </el-button>
+                  </div>
+                </div>
+                <p class="compliance-note slider-note">
+                  当前强度 {{ strengthPercent }}%，推荐 40% 轻修（以真实为主）；
                   0% = 完全还原原图，磨皮/提亮/匀肤/分区肤色都会按此比例减弱。
                 </p>
 
@@ -411,6 +435,17 @@ const strengthPercent = computed({
     photoStore.retouchStrength = v / 100
   },
 })
+
+/**
+ * 强度预设按钮.
+ * 滑杆的 marks 在窄面板里很容易和说明文字抢位置，这里额外给三个可点按钮，
+ * 用户不必精确拖拽也能一次到位（也是滑杆刻度的「文字版」）。
+ */
+const STRENGTH_PRESETS = [
+  { label: '原图 0%', value: 0 },
+  { label: '轻修 40%', value: 40 },
+  { label: '精修 100%', value: 100 },
+]
 
 /** 面板标题右侧的摘要：不展开也能看到当前选择 */
 const templateSummary = computed(() => {
@@ -1012,10 +1047,11 @@ async function handleDownload() {
   font-size: 16px;
 }
 
-/* BG Colors */
+/* BG Colors：只展示「保留原背景 + 白/蓝/红 + 自定义」共 5 项，
+   3 列更宽松（原来 24 色挤 4 列，真正要点的白蓝红淹没在一堆色号里） */
 .bg-color-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(3, 1fr);
   gap: 12px;
 }
 
@@ -1089,6 +1125,56 @@ async function handleDownload() {
   font-size: 12px;
   color: #909399;
   line-height: 1.6;
+}
+
+/* ===== 强度滑杆：三段独立排布，彻底避免刻度/数值/说明互相压字 =====
+   旧问题：el-slider 的 marks 是绝对定位在滑杆下方 ~22px 处，
+   紧跟其后的说明文字如果 margin 不够就会被刻度覆盖（截图里就是这种重叠）。
+   现在把「标题+当前值」「滑杆+刻度」「预设按钮」「说明」拆成四个各自占位的块，
+   滑杆块预留固定高度容纳刻度，说明文字再另起一段。 */
+.slider-block {
+  margin-top: 8px;
+}
+
+.slider-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.slider-head .sub-title {
+  margin: 0;
+}
+
+.slider-value {
+  font-size: 15px;
+  font-weight: 700;
+  color: #409eff;
+  font-variant-numeric: tabular-nums;
+}
+
+.slider-wrap {
+  /* el-slider 本体高 32px（按钮 20px + 上下留白）；没有 marks 了，
+     只留一点左右内边距，避免 0%/100% 的按钮贴边被裁 */
+  padding: 4px 6px;
+}
+
+.slider-presets {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+
+.slider-presets .el-button + .el-button {
+  margin-left: 0;
+}
+
+.slider-note {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px dashed #ebeef5;
 }
 
 /* ===== Responsive ===== */

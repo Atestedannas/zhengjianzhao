@@ -1,5 +1,5 @@
 <template>
-  <img v-if="objectUrl" :src="objectUrl" :alt="alt" />
+  <img v-if="displaySrc" :src="displaySrc" :alt="alt" />
   <div v-else class="auth-image-fallback">
     <el-icon :size="28" color="#c0c4cc"><Picture /></el-icon>
   </div>
@@ -13,7 +13,7 @@
  * 所以这里改用 axios 取 Blob，再转成 object URL 交给 <img>。
  * 父组件传进来的 class 会通过属性透传落到根元素上，样式不受影响。
  */
-import { ref, watch, onUnmounted } from 'vue'
+import { ref, computed, watch, onUnmounted } from 'vue'
 import { Picture } from '@element-plus/icons-vue'
 import { getProtectedBlob } from '@/api'
 
@@ -27,6 +27,27 @@ const objectUrl = ref('')
 let createdUrl: string | null = null
 // 连续切换 src 时，丢弃过期响应，避免旧图覆盖新图
 let seq = 0
+
+/**
+ * 是否需要走鉴权取 Blob.
+ *
+ * 只有后端受保护接口（/api/...）才需要 Bearer Token。静态资源
+ * （/web-pc/xxx.jpg、data:、blob:、http(s)://）直接交给 <img> 即可 ——
+ * 一律走 axios 会把这些路径拼成 /api/v1/web-pc/xxx.jpg 去请求，
+ * 结果必然 404，图片位置只剩占位图。
+ */
+function needsAuth(src: string): boolean {
+  if (!src) return false
+  if (/^(data:|blob:|https?:)/.test(src)) return false
+  return src.startsWith('/api/')
+}
+
+/** 实际交给 <img> 的地址：受保护资源用 objectURL，其余原样直连 */
+const displaySrc = computed(() => {
+  const src = props.src || ''
+  if (!src) return ''
+  return needsAuth(src) ? objectUrl.value : src
+})
 
 function releaseObjectUrl() {
   if (createdUrl) {
@@ -42,6 +63,8 @@ watch(
     releaseObjectUrl()
     objectUrl.value = ''
     if (!src) return
+    // 静态资源不走鉴权：直接交给 <img>，无需请求 Blob
+    if (!needsAuth(src)) return
 
     try {
       const blob = await getProtectedBlob(src)

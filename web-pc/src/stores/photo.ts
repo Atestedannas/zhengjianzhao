@@ -52,6 +52,12 @@ const HARD_TIMEOUT_MS = 90_000
 /** 硬超时文案 */
 const HARD_TIMEOUT_MESSAGE = '处理超时（超过 90 秒未完成），已停止等待，请重试'
 
+/**
+ * 常用背景色（面板里只展示这几个）.
+ * 白/蓝/红是证件照的三大标准底色；其余色号保留在后端能力里，不在 UI 铺开。
+ */
+const PRIMARY_BG_COLORS = ['white', 'blue', 'red']
+
 /** 后端处理失败 / 轮询超时：message 可直接展示给用户 */
 export class ProcessPollError extends Error {
   /** true 表示轮询超时（不是后端处理失败） */
@@ -239,16 +245,34 @@ export const usePhotoStore = defineStore('photo', () => {
     return templates.value.find((t) => t.id === selectedTemplate.value) || null
   })
 
+  /**
+   * 用户实际会用到的背景色（白 / 蓝 / 红 + 保留原背景 + 自定义）.
+   *
+   * 【为什么砍掉其余 20 多种】后端支持 24 种色值，但全量铺在面板里是
+   * 「功能列表」而不是「可用选项」：证件照 99% 的场景就是白底、蓝底、红底，
+   * 其余色号既不符合报名要求，又把真正要点的三个色挤在角落（用户实测反馈：
+   * 「常用的颜色加上就好了」）。所以这里只留常用色 + 保留原背景 + 自定义入口，
+   * 后端能力不变（老记录里的其它色值仍能正常回显与复现）。
+   */
   const availableBgColors = computed(() => {
-    if (currentTemplate.value) {
-      const allowed = currentTemplate.value.allowed_bg_colors
-      // 模板模式：预置允许色 + 常驻「自定义」入口
+    const byName = new Map(bgColors.value.map((c) => [c.name, c]))
+    const keep = byName.get('keep') || { name: 'keep', rgb: [-1, -1, -1] }
+    const common = PRIMARY_BG_COLORS
+      .map((name) => byName.get(name))
+      .filter((c): c is BgColor => !!c)
+    // 模板模式：只留模板允许的颜色（不允许的色发上去后端会 400 拒绝）。
+    // 「保留原背景」同理：模板没写 keep 时不展示，否则点它就会被后端拒。
+    const allowed = currentTemplate.value?.allowed_bg_colors
+    if (allowed) {
+      const shown = common.filter((c) => allowed.includes(c.name))
+      const keepAllowed = allowed.includes('keep')
       return [
-        ...bgColors.value.filter((c) => allowed.includes(c.name)),
+        ...(keepAllowed ? [keep] : []),
+        ...shown,
         { name: 'custom', rgb: [-1, -1, -1] },
       ]
     }
-    return bgColors.value
+    return [keep, ...common, { name: 'custom', rgb: [-1, -1, -1] }]
   })
 
   /** 实际发给后端的 bg_color：选中自定义时组装为 custom:#RRGGBB */
@@ -563,11 +587,13 @@ export const usePhotoStore = defineStore('photo', () => {
       outputFormat.value = tmpl.output_format
       customWidth.value = tmpl.width_px
       customHeight.value = tmpl.height_px
-      // 设置默认背景色为模板允许的第一个
-      const allowed = tmpl.allowed_bg_colors
-      if (allowed && allowed.length > 0) {
-        selectedBgColor.value = allowed[0]
-      }
+      // 默认背景色：优先用模板允许的第一个「常用色」。
+      // 【为什么不能直接用 allowed[0]】面板现在只展示白/蓝/红（+保留原背景/自定义），
+      // 若模板的 allowed[0] 是 pearl_white 之类的非常用色，UI 上就没有任何一项是
+      // 选中态，用户会以为「没选颜色」。所以这里收敛到常用色集合内。
+      const allowed: string[] = tmpl.allowed_bg_colors || []
+      const preferred = allowed.find((name) => PRIMARY_BG_COLORS.includes(name))
+      selectedBgColor.value = preferred || (allowed.length > 0 ? allowed[0] : 'white')
     }
   }
 

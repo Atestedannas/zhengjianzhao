@@ -1,10 +1,10 @@
 <template>
   <div class="compare-view">
-    <!-- 对比方式切换：默认「按住看原图」，最直观也最不容易出 bug -->
+    <!-- 对比方式切换：默认「左右对照」，左原图 / 右效果图，一眼可比 -->
     <div class="compare-toolbar">
       <el-radio-group v-model="mode" size="small">
+        <el-radio-button value="side">左右对照</el-radio-button>
         <el-radio-button value="hold">按住看原图</el-radio-button>
-        <el-radio-button value="split">上下分屏</el-radio-button>
         <el-radio-button value="slider">滑动对比</el-radio-button>
       </el-radio-group>
       <span class="align-badge" :class="{ warn: !aligned }">
@@ -14,9 +14,23 @@
       </span>
     </div>
 
-    <!-- ① 按住看原图（默认）：松开显示效果图 -->
+    <!-- ① 左右对照（默认）：左 = 原图，右 = 效果图.
+         两个格子宽度完全相等 + 图片统一 object-fit: contain，
+         所以同一张脸在两侧的缩放比例、中心点必然一致。 -->
+    <div v-if="mode === 'side'" class="side-stage">
+      <div class="side-cell">
+        <div class="side-label">原图</div>
+        <div class="side-frame"><AuthImage :src="baseSrc" alt="原图" class="stage-img" /></div>
+      </div>
+      <div class="side-cell">
+        <div class="side-label">效果图</div>
+        <div class="side-frame"><AuthImage :src="resultSrc" alt="效果图" class="stage-img" /></div>
+      </div>
+    </div>
+
+    <!-- ② 按住看原图：两张图完全叠放，按下切原图、松开切效果图 -->
     <div
-      v-if="mode === 'hold'"
+      v-else-if="mode === 'hold'"
       class="hold-stage"
       @pointerdown="startHold"
       @pointerup="endHold"
@@ -24,25 +38,12 @@
       @pointercancel="endHold"
       @contextmenu.prevent
     >
-      <!-- 两张图完全叠放，尺寸/裁切一致；切换只改可见性，绝不做缩放 -->
       <AuthImage :src="resultSrc" alt="效果图" class="stage-img" :class="{ hidden: holding }" />
       <AuthImage :src="baseSrc" alt="原图" class="stage-img" :class="{ hidden: !holding }" />
-      <div class="stage-tag">{{ holding ? '原图（未换底）' : '效果图' }}</div>
+      <div class="stage-tag">{{ holding ? '原图' : '效果图' }}</div>
       <div class="hold-hint" v-if="!holding">
         <el-icon><Pointer /></el-icon>
         按住图片查看原图
-      </div>
-    </div>
-
-    <!-- ② 上下分屏：两张图上下排布，同一容器宽度 → 缩放比例天然一致 -->
-    <div v-else-if="mode === 'split'" class="split-stage">
-      <div class="split-cell">
-        <div class="split-label">原图（未换底）</div>
-        <div class="split-frame"><AuthImage :src="baseSrc" alt="原图" class="stage-img" /></div>
-      </div>
-      <div class="split-cell">
-        <div class="split-label">效果图</div>
-        <div class="split-frame"><AuthImage :src="resultSrc" alt="效果图" class="stage-img" /></div>
       </div>
     </div>
 
@@ -61,13 +62,11 @@
         max="100"
         aria-label="原图与效果图对比"
       />
-      <span class="stage-tag tag-left">原图（未换底）</span>
+      <span class="stage-tag tag-left">原图</span>
       <span class="stage-tag tag-right">效果图</span>
     </div>
 
-    <p class="compare-note">
-      {{ note }}
-    </p>
+    <p class="compare-note">{{ note }}</p>
   </div>
 </template>
 
@@ -75,19 +74,17 @@
 /**
  * 原图 / 效果图对比组件.
  *
- * 【为什么重写】旧实现有两个致命问题：
- *   1. 左边放的是**上传原片**、右边放的是**裁剪+对齐+缩放后的结果**，
- *      两张图比例、中心点、缩放全都不一样 —— 用户看到的第一眼永远是
- *      「右边脸怎么这么大」，根本没法判断美颜效果；
- *   2. 滑动对比用「容器宽度百分比 + overflow:hidden」做裁切，子图的
- *      width:100% 是相对**裁切层**而不是容器，图片被压扁 → 撕裂感。
+ * 【为什么必须是这两张图】左边放「用户上传的原片」、右边放「裁剪+对齐+缩放后的
+ * 结果」时，两张图比例、中心点、缩放全都不一样 —— 用户看到的第一眼永远是
+ * 「右边脸怎么这么大」，根本没法判断美颜效果。所以两张图都来自后端：
+ * 结果图 + **同几何基线图**（baseline_url，同裁剪/同对齐/同像素），逐像素对齐。
  *
- * 现在的做法：
- *   * 两张图都来自后端：结果图 + **同几何基线图**（baseline_url），
- *     像素尺寸完全相同，任何对比方式下都严格对齐；
- *   * 三种形态：按住看原图（默认，最直观）、上下分屏（最稳）、滑动对比
- *     （用 clip-path 裁切，元素尺寸不变，不可能再出现缩放不一致）；
- *   * 基线缺失时（老记录 / 未开美颜）回退到上传原图，并明确提示几何不一致。
+ * 【三种形态】
+ *   side   左右对照（默认）：左原图 / 右效果图，最直观
+ *   hold   按住看原图：两张图叠放，按下切原图，松开切效果图
+ *   slider 滑动对比：用 clip-path 裁切，元素尺寸不变（旧实现用 width% + overflow
+ *          会把子图压扁，产生撕裂感）
+ * 基线缺失时（老记录 / 未开美颜）回退到上传原片，并明确提示几何可能不一致。
  */
 import { computed, ref } from 'vue'
 import { Pointer, CircleCheck, Warning } from '@element-plus/icons-vue'
@@ -102,9 +99,10 @@ const props = defineProps<{
   fallbackSrc?: string | null
 }>()
 
-type CompareMode = 'hold' | 'split' | 'slider'
+type CompareMode = 'side' | 'hold' | 'slider'
 
-const mode = ref<CompareMode>('hold')
+/** 默认左右对照：左原图、右效果图，用户第一眼就能比 */
+const mode = ref<CompareMode>('side')
 const holding = ref(false)
 const sliderRatio = ref(50)
 
@@ -116,16 +114,17 @@ const baseSrc = computed(() => props.baselineSrc || props.fallbackSrc || '')
 
 const note = computed(() => {
   if (!aligned.value) {
-    return '当前记录没有生成对比基线（老记录或未开启美颜），左图为上传原片，缩放与裁切可能与效果图不同，请谨慎判断差异。'
+    return '当前记录没有生成对比基线（老记录或未开启美颜），左图为上传原片，'
+      + '缩放与裁切可能与效果图不同，请谨慎判断差异。'
   }
   const common =
     '两张图使用完全相同的裁剪窗口、缩放比例与输出像素，位置逐像素对齐；'
     + '原图侧保留原始背景（未换底），对比时请以肤色、皮肤纹理、五官清晰度为准。'
+  if (mode.value === 'side') {
+    return `左侧原图、右侧效果图，等宽同比例并排。${common}`
+  }
   if (mode.value === 'hold') {
     return `按住图片显示原图，松开显示效果图。${common}`
-  }
-  if (mode.value === 'split') {
-    return `上下两张图等宽排布，可逐处对照。${common}`
   }
   return `拖动滑块左右对照，任何位置都不会出现缩放跳变。${common}`
 })
@@ -166,8 +165,45 @@ function endHold() {
   color: #e6a23c;
 }
 
-/* 三种形态共用同一套「图片盒子」规则：宽高比固定、object-fit: contain，
-   这样只要两张图源尺寸一致，就必然像素级对齐。 */
+/* ===== ① 左右对照 ===== */
+.side-stage {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  /* 用 max-width 约束整组宽度（而不是给单个 frame 加 max-height），
+     这样两个格子的宽高比始终是 3:4 —— 一旦用 max-height 压高度，
+     aspect-ratio 会被打破、图片多出一圈留白，虽然两侧仍对齐但观感变差 */
+  width: 100%;
+  max-width: 720px;
+  margin: 0 auto;
+}
+
+.side-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.side-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: #606266;
+  text-align: center;
+}
+
+/* 两个格子等宽 + 同一个宽高比 → 两张图的缩放比例与中心点必然一致 */
+.side-frame {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 3 / 4;
+  border-radius: 10px;
+  overflow: hidden;
+  background: #f5f7fa;
+  border: 1px solid #ebeef5;
+}
+
+/* ===== ② 按住看原图 / ③ 滑动对比 共用盒子 ===== */
 .hold-stage,
 .slider-stage {
   position: relative;
@@ -230,37 +266,6 @@ function endHold() {
   pointer-events: none;
 }
 
-.split-stage {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 12px;
-}
-
-.split-cell {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.split-label {
-  font-size: 13px;
-  font-weight: 500;
-  color: #606266;
-  text-align: center;
-}
-
-/* 两个格子宽度相同 → 同一张图在两边缩放比例必然一致 */
-.split-frame {
-  position: relative;
-  width: 100%;
-  aspect-ratio: 3 / 4;
-  max-height: 56vh;
-  border-radius: 10px;
-  overflow: hidden;
-  background: #f5f7fa;
-  border: 1px solid #ebeef5;
-}
-
 .slider-clip {
   position: absolute;
   inset: 0;
@@ -295,8 +300,8 @@ function endHold() {
   line-height: 1.6;
 }
 
-@media (max-width: 768px) {
-  .split-stage {
+@media (max-width: 900px) {
+  .side-stage {
     grid-template-columns: 1fr;
   }
 }
