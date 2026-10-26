@@ -58,7 +58,15 @@ async def process_photo(
     dpi: int = Form(300),
     min_kb: int = Form(0),
     max_kb: int = Form(100),
-    bg_color: str = Form("white"),
+    # 空串 = 调用方没有显式指定背景色，由模板默认值 / 白色兜底决定。
+    # 【为什么默认值不能直接写 "white"】以前默认 "white"，代码就无法区分
+    # 「用户主动选了白底」和「用户根本没传这个字段」，于是用
+    # `bg_color = colors[0] if bg_color == "white" else bg_color` 猜意图 ——
+    # 结果用户明确点「白底」时被模板的 colors[0] 覆盖掉：
+    #   教师招聘2寸 allowed=[blue, white] → 选白底却出蓝底
+    #   征兵照片   allowed=[red, white, blue] → 选白底却出红底
+    # 这正是「选白色背景却不能正确换白色背景」的直接原因。
+    bg_color: str = Form(""),
     output_format: str = Form("JPEG"),
     # === 美颜参数（证件照只允许「自然微调」）===
     beautify_level: int = Form(BeautyLevel.COMPLIANT),
@@ -104,6 +112,11 @@ async def process_photo(
     """
     file_bytes = await file.read()
 
+    # 背景色归一化：空串 / "default" / "auto" / 缺省 → 交给下面的模板或白色兜底决定
+    requested_bg = (bg_color or "").strip()
+    if requested_bg.lower() in ("", "default", "auto"):
+        requested_bg = ""
+
     # 模板参数覆盖
     if template_id:
         result = await db.execute(select(SpecTemplate).where(SpecTemplate.id == template_id))
@@ -124,15 +137,24 @@ async def process_photo(
             colors = ["white", "blue", "red"]
         # custom:#RRGGBB 是用户自由取色（简历/工牌照等模板外场景），放行；
         # 真正的非法色名仍拒绝。bg_color 的最终解析在 background.parse_bg_color。
-        is_custom = bg_color.startswith("custom:")
-        if not is_custom and bg_color != "white" and bg_color not in colors:
+        is_custom = requested_bg.startswith("custom:")
+        if requested_bg and not is_custom and requested_bg not in colors:
             raise HTTPException(
                 status_code=400,
-                detail=f"模板 {tmpl.name} 不支持背景色 '{bg_color}'，仅支持: {', '.join(colors)}",
+                detail=f"模板 {tmpl.name} 不支持背景色 '{requested_bg}'，仅支持: {', '.join(colors)}",
             )
-        bg_color = colors[0] if bg_color == "white" else bg_color
+        # 【关键修复】只有调用方**没有指定**背景色时才用模板默认值（colors[0]）。
+        # 以前写的是 `colors[0] if bg_color == "white" else bg_color`，把「用户明确
+        # 选了白底」也当成「没指定」，于是白底被换成蓝底/红底 —— 用户点白底，
+        # 出来的永远是模板首色，这就是「选白色背景不能正确换白」的直接原因。
+        bg_color = requested_bg or colors[0]
         output_format = tmpl.output_format
         resize_mode = "crop"
+    else:
+        # 非模板模式：没有显式指定就用白底（保持旧版默认语义）。
+        # 这里必须兜底，否则空串会一路传到 parse_bg_color，被当成未知色名
+        # 再降级成 white —— 虽然结果一样，但日志里会多一条误导性的 warning。
+        bg_color = requested_bg or "white"
 
     # 预设尺寸
     if width == 0 and height == 0:
