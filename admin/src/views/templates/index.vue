@@ -85,7 +85,11 @@ const templates = ref<Template[]>([])
 const loading = ref(false)
 
 const colorMap: Record<string, string> = {
-  white: '白色', blue: '蓝色', red: '红色', keep: '保持原色',
+  white: '白色', blue: '蓝色', red: '红色', gray: '灰色',
+  keep: '保持原色', white_std: '白色', blue_std: '蓝色', blue_gov: '考公深蓝',
+  blue_alt: '蓝色变体', blue_cyan: '青蓝', sky_light: '学历浅蓝',
+  red_std: '正红', red_deep: '深红', red_crimson: '正深红', red_alt: '红色变体',
+  red_dark: '暗红', gray_light: '浅灰', gray_mid: '中浅灰', gray_deep: '灰',
 }
 
 onMounted(loadData)

@@ -14,6 +14,7 @@
 
 import io
 import os
+import threading
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Optional
@@ -52,7 +53,142 @@ BG_COLOR_MAP = {
     "rose":        (255, 228, 225),  # 玫瑰粉
     "champagne":   (247, 231, 206),  # 香槟米
     "dark_gray":   (96, 96, 96),     # 深灰
+
+    # ---- 证件照标准色号（2026-10：按各机构实际审核要求整理）----
+    # 【为什么要按标准色号收录，而不是「差不多就行」】
+    # 报名系统的背景审核是按像素 RGB 卡阈值的（例如白底要求 ≥(250,250,250)），
+    # 用户肉眼觉得「都是蓝色」的两种蓝，可能只有一种能过审。所以这里每个色
+    # 都对应一个明确的使用场景，前端按分组展示并标注 HEX，用户按报考要求挑。
+    #
+    # 白底：身份证 / 护照 / 签证 / 驾驶证（最通用）
+    "white_std":   (255, 255, 255),  # #FFFFFF 标准白
+    # 蓝底：三种常见深浅，适用场景完全不同
+    "blue_std":    (67, 142, 219),   # #438EDB 标准天蓝（简历/工牌/企业入职/毕业证）
+    "blue_gov":    (0, 102, 204),    # #0066CC 考公深蓝（公务员/事业单位/四六级，饱和度更高）
+    "blue_alt":    (29, 141, 213),   # #1D8DD5 蓝色变体（部分平台认证）
+    "blue_cyan":   (0, 191, 243),    # #00BFF3 青蓝变体（特定证件采集）
+    # 红底：标准正红 vs 深红，打印溢出风险不同
+    "red_std":     (255, 0, 0),      # #FF0000 标准正红（结婚证/荣誉证书/党团材料）
+    "red_deep":    (220, 20, 60),    # #DC143C 深红（党团关系转接/职业资格证，打印不易溢出）
+    "red_crimson": (204, 0, 0),      # #CC0000 正深红（与 #DC143C 并列的常见深红写法）
+    "red_alt":     (206, 0, 0),      # #CE0000 红色变体
+    "red_dark":    (149, 2, 8),      # #950208 暗红变体（特定机构要求）
+    # 灰底 / 浅蓝底：签证与学历采集专用
+    "gray_light":  (240, 240, 240),  # #F0F0F0 浅灰（英国签证/高级职称评审/特定考试）
+    "gray_mid":    (230, 230, 230),  # #E6E6E6 中浅灰
+    "gray_deep":   (211, 211, 211),  # #D3D3D3 深一档浅灰
+    "sky_light":   (100, 197, 255),  # #64C5FF 浅蓝（学信网/自考/成人高考专用）
 }
+
+# 色板分组与标准色号标注（/bg-colors 接口下发给前端做分组展示）.
+# 前端按 group 渲染分组标题，按 label 显示中文名，按 hex 显示标准色号，
+# 按 usage 显示「这个色用在哪」——用户是按报考公告里的 HEX 挑色的，
+# 光看色块分辨不出 #438EDB 与 #0066CC。
+BG_COLOR_META = {
+    # ---- 白 ----
+    "white":        {"group": "白", "label": "标准白",   "hex": "#FFFFFF",
+                     "usage": "身份证/护照/签证/驾驶证，审核普遍要求 RGB≥250"},
+    "white_std":    {"group": "白", "label": "标准白",   "hex": "#FFFFFF",
+                     "usage": "身份证/护照/签证/驾驶证，审核普遍要求 RGB≥250"},
+    "pearl_white":  {"group": "白", "label": "珍珠白",   "hex": "#F5F5F5",
+                     "usage": "打印偏灰时的柔和白，非审核阈值白"},
+    # ---- 蓝 ----
+    "blue":         {"group": "蓝", "label": "标准天蓝", "hex": "#438EDB",
+                     "usage": "简历/工牌/企业入职/毕业证，最通用的蓝底"},
+    "blue_std":     {"group": "蓝", "label": "标准天蓝", "hex": "#438EDB",
+                     "usage": "简历/工牌/企业入职/毕业证，最通用的蓝底"},
+    "blue_gov":     {"group": "蓝", "label": "考公深蓝", "hex": "#0066CC",
+                     "usage": "公务员/事业单位/四六级，饱和度要求更高的官方系统"},
+    "blue_alt":     {"group": "蓝", "label": "蓝色变体", "hex": "#1D8DD5",
+                     "usage": "部分平台认证、特定证件采集"},
+    "blue_cyan":    {"group": "蓝", "label": "青蓝",     "hex": "#00BFF3",
+                     "usage": "偏青的蓝底，部分平台认证使用"},
+    "light_blue":   {"group": "蓝", "label": "浅蓝",     "hex": "#ADD8E6",
+                     "usage": "偏淡的蓝底，观感柔和"},
+    "sky_blue":     {"group": "蓝", "label": "天蓝",     "hex": "#87CEEB",
+                     "usage": "偏浅的天蓝，非标准审核色"},
+    "sky_light":    {"group": "蓝", "label": "学历浅蓝", "hex": "#64C5FF",
+                     "usage": "学信网/自考/成人高考等学历采集专用"},
+    "dark_blue":    {"group": "蓝", "label": "护照深蓝", "hex": "#193780",
+                     "usage": "护照类深蓝，正式感强"},
+    "navy":         {"group": "蓝", "label": "藏青",     "hex": "#000080",
+                     "usage": "藏青深蓝，非证件照通用色"},
+    # ---- 红 ----
+    "red":          {"group": "红", "label": "标准红",   "hex": "#D52B1E",
+                     "usage": "通用红底，视觉稳重"},
+    "red_std":      {"group": "红", "label": "正红",     "hex": "#FF0000",
+                     "usage": "结婚证/荣誉证书/入党入团材料，标准正红"},
+    "red_deep":     {"group": "红", "label": "深红",     "hex": "#DC143C",
+                     "usage": "党团关系转接/职业资格证，打印不易溢出"},
+    "red_crimson":  {"group": "红", "label": "正深红",   "hex": "#CC0000",
+                     "usage": "深红的另一种常见写法，打印更稳"},
+    "red_alt":      {"group": "红", "label": "红色变体", "hex": "#CE0000",
+                     "usage": "部分资料给出的红色参考值"},
+    "red_dark":     {"group": "红", "label": "暗红",     "hex": "#950208",
+                     "usage": "特定机构要求的暗红，随公告变化"},
+    "wine_red":     {"group": "红", "label": "酒红",     "hex": "#9E1F35",
+                     "usage": "部分考试/社保卡使用的酒红"},
+    "maroon":       {"group": "红", "label": "深红褐",   "hex": "#800000",
+                     "usage": "深红褐，非证件照通用色"},
+    # ---- 灰 ----
+    "gray_light":   {"group": "灰", "label": "浅灰",     "hex": "#F0F0F0",
+                     "usage": "英国签证/高级职称评审/特定考试采集"},
+    "gray_mid":     {"group": "灰", "label": "中浅灰",   "hex": "#E6E6E6",
+                     "usage": "浅灰的另一档写法 (230,230,230)"},
+    "gray_deep":    {"group": "灰", "label": "灰",       "hex": "#D3D3D3",
+                     "usage": "深一档浅灰 (211,211,211)"},
+    "gray":         {"group": "灰", "label": "中灰",     "hex": "#C0C0C0",
+                     "usage": "通用中灰，非审核标准色"},
+    "light_gray":   {"group": "灰", "label": "浅灰（旧）", "hex": "#DCDCDC",
+                     "usage": "历史记录兼容色"},
+    "dark_gray":    {"group": "灰", "label": "深灰",     "hex": "#606060",
+                     "usage": "深灰，非证件照通用色"},
+    # ---- 其他（历史记录兼容）----
+    "keep":         {"group": "其他", "label": "保留原背景", "hex": "", "usage": ""},
+    "custom":       {"group": "其他", "label": "自定义", "hex": "", "usage": ""},
+    "green":        {"group": "其他", "label": "绿色",   "hex": "#008000", "usage": ""},
+    "forest_green": {"group": "其他", "label": "墨绿",   "hex": "#225533", "usage": ""},
+    "mint_green":   {"group": "其他", "label": "薄荷绿", "hex": "#C7EDCC", "usage": ""},
+    "pink":         {"group": "其他", "label": "粉色",   "hex": "#FFC0CB", "usage": ""},
+    "rose":         {"group": "其他", "label": "玫瑰粉", "hex": "#FFE4E1", "usage": ""},
+    "cream":        {"group": "其他", "label": "米色",   "hex": "#FFFDD0", "usage": ""},
+    "champagne":    {"group": "其他", "label": "香槟米", "hex": "#F7E7CE", "usage": ""},
+    "teal":         {"group": "其他", "label": "青色",   "hex": "#008080", "usage": ""},
+    "lavender":     {"group": "其他", "label": "淡紫",   "hex": "#E6E6FA", "usage": ""},
+}
+
+# 色板默认展示顺序（前端按此顺序分组；未列出的色排到最后）
+BG_COLOR_GROUP_ORDER = ["白", "蓝", "红", "灰", "其他"]
+
+# 证件照常用色板（前端默认展示的这批，按业务优先级排序）.
+# 【为什么不是把 BG_COLOR_MAP 全量铺出来】后端保留 30+ 色值是给历史记录回显和
+# 自定义取色用的；面板里全铺是「功能列表」而不是「可选答案」。这里只收录
+# 有明确使用场景的标准色号（对照用户提供的《证件照常用背景色 RGB 参考》）：
+# 白 1 / 蓝 5 / 红 5 / 灰 3，加「保留原背景」与「自定义」共 16 项，
+# 按 白→蓝→红→灰 分组展示，每项标 HEX 与适用场景。
+STANDARD_BG_COLORS = [
+    "white",
+    "blue_std", "blue_gov", "blue_alt", "blue_cyan", "sky_light",
+    "red_std", "red_deep", "red_crimson", "red_alt", "red_dark",
+    "gray_light", "gray_mid", "gray_deep",
+]
+
+
+def bg_color_group(name: str) -> str:
+    """取某个色名所属的色调分组（白/蓝/红/灰/其他）.
+
+    【为什么模板校验要按分组而不是按色名】模板的 allowed_bg_colors 里写的是
+    组级别的意图（"blue" = 蓝底），而用户需要精确到 #438EDB / #0066CC。
+    如果只认字面色名，用户选了考公深蓝就会被 400 拒绝；按分组放行后，
+    「模板要蓝底 + 用户要考公深蓝」是对的，「模板要白底 + 用户要深蓝」仍然拒绝。
+    """
+    return BG_COLOR_META.get(name, {}).get("group", "其他")
+
+
+def same_color_family(a: str, b: str) -> bool:
+    """两个色名是否属于同一色调分组（用于模板兼容判定）."""
+    ga, gb = bg_color_group(a), bg_color_group(b)
+    return ga == gb and ga not in ("其他",)
 
 
 def parse_bg_color(bg_color: str):
@@ -131,30 +267,61 @@ def _intra_op_threads() -> int:
     return max(1, min(4, os.cpu_count() or 2))
 
 
-def available_memory_mb() -> Optional[int]:
-    """读取宿主机可用内存（MB）；非 Linux 或读不到时返回 None.
-
-    容器没有设 memory limit 时 /proc/meminfo 反映的就是宿主机内存，
-    这正是内核 OOM killer 判断的依据。
-    """
+def _meminfo() -> dict:
+    """读 /proc/meminfo（单位 MB）；读不到返回空 dict."""
+    vals = {}
     try:
         with open("/proc/meminfo", "r", encoding="utf-8") as f:
             for line in f:
-                if line.startswith("MemAvailable:"):
-                    return int(line.split()[1]) // 1024
-    except (OSError, ValueError, IndexError):
+                parts = line.split()
+                if len(parts) >= 2 and parts[0].endswith(":"):
+                    try:
+                        vals[parts[0][:-1]] = int(parts[1]) // 1024
+                    except ValueError:
+                        pass
+    except OSError:
+        return {}
+    return vals
+
+
+def available_memory_mb() -> Optional[int]:
+    """读取当前**可分配**内存（MB）= MemAvailable + 可用 Swap；读不到返回 None.
+
+    【为什么要把 swap 算进来】BiRefNet 单次推理峰值 RSS ≈ 3.1GB，而线上机器
+    物理内存只有 3.7GB。只看 MemAvailable（永远到不了 3.6GB 阈值）的结果就是
+    「永远降级到 u2net」—— 这正是线上从未用上 BiRefNet 的直接原因。
+
+    内核判断 OOM 用的是「物理内存 + swap 是否还有可用页」，不是「物理内存够不够」。
+    既然 swap 也能承载匿名页（推理过程的中间张量就是匿名页），就该把它计入可分配
+    总量，否则代码的判据比内核更保守，白白放弃画质。
+
+    代价：超出物理内存的部分会落到 swap 上，推理明显变慢（实测 56~61 秒）。
+    这个代价是用户明确接受的（预算 1~3 分钟），换来 BiRefNet 的发丝级抠图。
+    """
+    mi = _meminfo()
+    if not mi:
         return None
-    return None
+    avail = mi.get("MemAvailable")
+    if avail is None:
+        return None
+    swap_free = max(0, mi.get("SwapFree", 0) or 0)
+    return int(avail + swap_free)
+
+
+def physical_memory_mb() -> Optional[int]:
+    """物理内存总量（MB），仅用于日志/诊断（不含 swap）."""
+    total = _meminfo().get("MemTotal")
+    return int(total) if total else None
 
 
 def resolve_engine(available_mb: Optional[int] = None) -> str:
     """决定本次抠图用哪个引擎.
 
-    auto 模式下可用内存低于阈值就用轻量模型 —— 宁可质量略降，
-    也不能让一个 3GB+ 的推理把整台小机器拖进 OOM。
+    auto 模式下可分配内存（含 swap）低于阈值就用轻量模型 —— 宁可质量略降，
+    也不能让一个 3.1GB 的推理把整台小机器拖进 OOM。
 
-    available_mb 仅用于测试注入；不传时读宿主机 /proc/meminfo。
-    读不到（非 Linux）时按 BiRefNet 处理，保持改造前的行为。
+    available_mb 仅用于测试注入；不传时读 /proc/meminfo。
+    读不到（非 Linux）时按 BiRefNet 处理。
     """
     mode = (getattr(settings, "BG_ENGINE", "auto") or "auto").strip().lower()
     if mode in ("birefnet", "u2net", "off"):
@@ -168,8 +335,8 @@ def resolve_engine(available_mb: Optional[int] = None) -> str:
         return "birefnet"
 
     logger.warning(
-        f"可用内存 {avail}MB < 阈值 {threshold}MB，抠图自动降级为轻量模型 "
-        f"{LITE_MODEL_FILE}（320x320）以避免 OOM；升配内存后会恢复 BiRefNet"
+        f"可分配内存（含 swap）{avail}MB < 阈值 {threshold}MB，抠图自动降级为轻量模型 "
+        f"{LITE_MODEL_FILE}（320x320）以避免 OOM；加内存或扩 swap 后会恢复 BiRefNet"
     )
     return "u2net"
 
@@ -297,8 +464,24 @@ def _sigmoid(m: np.ndarray) -> np.ndarray:
     return np.clip(out, 0.0, 1.0).astype(np.float32)
 
 
+# ============================================================ 推理互斥锁
+# 【为什么必须有这把锁】BiRefNet 的 ONNX 输入写死 1x3x1024x1024，实测单次推理
+# 峰值 RSS ≈ 3.1GB（2026-10 线上实测 3125MB，耗时 56~61 秒）。4GB 内存的机器
+# 上**并发两次**必然被内核 OOM 杀掉（表现为 gunicorn worker 收 SIGKILL → 502，
+# 或 celery 任务半途消失 → 记录永久卡在 processing）。
+#
+# 现状：celery worker 用 -c 1 串行，所以默认是安全的。但那是**部署参数**给的
+# 保证，不是代码的保证 —— 谁把 -c 调成 2、或以后把抠图挪回 web 进程
+# （gunicorn -w 2 就是两个进程），就会静默踩爆。所以代码层再加一道：
+# 同一进程内模型推理严格串行，后来者等锁而不是一起往上冲。
+#
+# 注意这是「进程内」锁（threading.Lock 不跨进程）。跨进程安全仍依赖
+# 「只有 celery worker 这一个进程做抠图」这个部署事实，见 compose 注释。
+_INFER_LOCK = threading.Lock()
+
+
 def _infer_alpha(image: Image.Image, engine: str) -> np.ndarray:
-    """用指定引擎推理前景 alpha 蒙版.
+    """用指定引擎推理前景 alpha 蒙版（进程内串行，见 _INFER_LOCK）.
 
     返回:
         np.ndarray: float32, 0~1, 尺寸与原图一致 (H, W)，1=前景 0=背景.
@@ -313,31 +496,32 @@ def _infer_alpha(image: Image.Image, engine: str) -> np.ndarray:
             f"Please place {model_file} in backend/models/."
         )
 
-    info = _get_session(model_path, engine, size)
+    with _INFER_LOCK:
+        info = _get_session(model_path, engine, size)
 
-    # 预处理：RGB 归一化 → resize 到模型输入边长
-    # （两个模型的输入形状都是导出时写死的，喂错尺寸 onnxruntime 会直接报错）
-    rgb = np.array(image.convert("RGB"), dtype=np.float32) / 255.0          # HWC
-    rgb_resized = cv2.resize(rgb, (size, size), interpolation=cv2.INTER_LINEAR)
-    chw = np.transpose(rgb_resized, (2, 0, 1))[None, ...]                    # 1,3,H,W
-    x = np.ascontiguousarray((chw - _MEAN) / _STD, dtype=np.float32)
+        # 预处理：RGB 归一化 → resize 到模型输入边长
+        # （两个模型的输入形状都是导出时写死的，喂错尺寸 onnxruntime 会直接报错）
+        rgb = np.array(image.convert("RGB"), dtype=np.float32) / 255.0          # HWC
+        rgb_resized = cv2.resize(rgb, (size, size), interpolation=cv2.INTER_LINEAR)
+        chw = np.transpose(rgb_resized, (2, 0, 1))[None, ...]                    # 1,3,H,W
+        x = np.ascontiguousarray((chw - _MEAN) / _STD, dtype=np.float32)
 
-    # 只取第一个输出（u2net 家族的第 0 个输出就是融合后的 d0，
-    # 其余 d1~d6 用不到，onnxruntime 会按需裁剪不参与计算）
-    out = info.sess.run([info.output_name], {info.input_name: x})[0]         # 1,1,size,size
+        # 只取第一个输出（u2net 家族的第 0 个输出就是融合后的 d0，
+        # 其余 d1~d6 用不到，onnxruntime 会按需裁剪不参与计算）
+        out = info.sess.run([info.output_name], {info.input_name: x})[0]         # 1,1,size,size
 
-    mask = np.squeeze(out)                                                   # size,size
-    # 按引擎声明归一化：u2net 的概率图绝不能再 sigmoid（见 normalize_mask 说明）
-    mask = normalize_mask(mask, engine)
+        mask = np.squeeze(out)                                                   # size,size
+        # 按引擎声明归一化：u2net 的概率图绝不能再 sigmoid（见 normalize_mask 说明）
+        mask = normalize_mask(mask, engine)
 
-    # 缩回原图尺寸作为 alpha
-    h, w = image.size[1], image.size[0]
-    alpha = cv2.resize(mask, (w, h), interpolation=cv2.INTER_LINEAR)
-    alpha = np.clip(alpha, 0.0, 1.0).astype(np.float32)
+        # 缩回原图尺寸作为 alpha（放锁内：这步 cv2 大数组也是峰值内存的一部分）
+        h, w = image.size[1], image.size[0]
+        alpha = cv2.resize(mask, (w, h), interpolation=cv2.INTER_LINEAR)
+        alpha = np.clip(alpha, 0.0, 1.0).astype(np.float32)
 
-    # 显式释放中间张量：小内存机器上这几百 MB 回来的很及时
-    del x, chw, rgb_resized, rgb, out, mask
-    return alpha
+        # 显式释放中间张量：小内存机器上这几百 MB 回来的很及时
+        del x, chw, rgb_resized, rgb, out, mask
+        return alpha
 
 
 def _run_alpha(image: Image.Image) -> np.ndarray:
@@ -362,6 +546,26 @@ _EDGE_ERODE_MAX = 4
 _EDGE_FEATHER_RATIO = 0.0012
 _EDGE_FEATHER_MIN = 1.0
 _EDGE_FEATHER_MAX = 3.0
+# ---- 高调底（白/浅灰）专用「收紧」参数 ----
+# 【为什么高调底要单独一套】深底上的软边是**加分项**：蓝/红底会把 alpha 过渡带
+# 融进同色调的暗部，看起来是自然的镜头景深。同一圈软边放到白底上就变成废片：
+# 背景 255、头发边缘 240~250 的灰带会被眼睛读成「白雾 / 发光 / 没抠干净」。
+#
+# 【实测数据（1680×2240 蓝底原片，单人半身）】轮廓过渡带（luma 246→60 的横向像素）：
+#     现状（引导半径 0.006·短边≈10px + 羽化 2px）→ 中位 12px
+#     收紧（0.003·短边≈5px + 羽化 1.2px + 过渡带压缩 0.55）→ 中位 4.5px
+# 半透明带（0.01<α<0.5）像素数 48659 → 14095（-71%），也就是那圈「灰雾」
+# 少了七成；背景四角 254 → 255，发丝根数肉眼无减少，缩到 295×413 一寸后无锯齿。
+#
+# 深底（蓝/红/灰/绿）继续走原来的柔边参数 —— 收紧会让红底出现剪刀切边。
+_EDGE_TIGHT_GUIDE_RATIO = 0.0030
+_EDGE_TIGHT_FEATHER_RATIO = 0.0007
+_EDGE_TIGHT_FEATHER_MIN = 1.0
+_EDGE_TIGHT_FEATHER_MAX = 1.4
+# 过渡带压缩强度：0=不压缩，0.55=把 [0.02,0.98] 的斜坡往 0/1 两端推（实测最佳）
+_EDGE_TIGHT_BAND_COMPRESS = 0.55
+# 高调底判定阈值：相对亮度 ≥ 该值的底色按「高调底」处理（收边 + 弱投影 + 弱环境光）
+_HIGH_KEY_LUMA = 235.0
 # 环境光：过渡带混入背景色的强度（0.28 = 明显可见但不脏）
 _AMBIENT_STRENGTH = 0.28
 # 软投影
@@ -395,13 +599,63 @@ def _guided_filter(guide: np.ndarray, src: np.ndarray, radius: int, eps: float) 
     return _box_filter(a, radius) * guide + _box_filter(b, radius)
 
 
-def _refine_alpha(alpha: np.ndarray, rgb: np.ndarray) -> np.ndarray:
+def _is_high_key(target_rgb) -> bool:
+    """是否「高调底」：白底与接近白的浅灰（相对亮度 ≥ _HIGH_KEY_LUMA）.
+
+    【高调底与深底为什么必须分开处理】背景只是一层底色，但眼睛对「边缘对比」
+    的解读完全不同：
+
+      * 深底（蓝 67,142,219 / 红 213,43,30）：人物剪影比背景暗，alpha 过渡带
+        里那几十个中间值像素落在暗部，读起来是镜头景深，是加分项。
+      * 高调底（白 255 / 浅灰 240）：背景 255，过渡带 240~250 的灰带对比度
+        只有 5~15 级，眼睛读成「一层白雾、头发在发光、没抠干净」，也就是
+        用户说的「白色底不自然」。
+
+    所以高调底要额外做三件事（三件都不做在深底上）：
+      1. 收紧 alpha 过渡带（_refine_alpha 的 tight 模式）；
+      2. 不加环境光（否则白发丝会描一圈更亮的白光）；
+      3. 不加软投影（255 被压暗一级就是可见灰影，且审核要求 ≥250）。
+    第 1 条是本轮修复的核心：实测把过渡带从 12px 收到 4.5px。
+    """
+    r, g, b = (float(c) for c in target_rgb)
+    luma = 0.2126 * r + 0.7152 * g + 0.0722 * b
+    return luma >= _HIGH_KEY_LUMA
+
+
+def _compress_alpha_band(alpha: np.ndarray, strength: float) -> np.ndarray:
+    """压缩 alpha 过渡带：把 [0.02,0.98] 的斜坡往 0/1 两端推（幂函数族，可逆）.
+
+    【为什么不用 S 曲线 / smoothstep】那两者的斜率在端点趋于 0，会把羽化带
+    压成一段**平台**（视觉上是「一条等宽的灰线」），比原来的软边更假。
+    这里用「过半程加速」的幂函数：a<0.5 走 (a/0.5)^(1+3s)·0.5，
+    a>0.5 镜像对称。端点斜率 = 1+3s > 1，过渡带变陡但仍是连续的，
+    半透明像素（发丝真正需要的中间值）不会被抹成 0 或 1。
+
+    strength=0 时原样返回；0.55 实测把 12px 坡收到 4.5px，发丝根数不减。
+    """
+    if strength <= 0.0:
+        return alpha.astype(np.float32)
+    s = float(strength)
+    a = np.clip(alpha, 0.0, 1.0).astype(np.float32)
+    exp = 1.0 + 3.0 * s
+    lo = np.power(np.clip(a / 0.5, 0.0, 1.0), exp) * 0.5
+    hi = 1.0 - np.power(np.clip((1.0 - a) / 0.5, 0.0, 1.0), exp) * 0.5
+    return np.where(a < 0.5, lo, hi).astype(np.float32)
+
+
+def _refine_alpha(alpha: np.ndarray, rgb: np.ndarray, *,
+                  high_key: bool = False) -> np.ndarray:
     """Alpha 边缘精修四步（PRD 二.发丝级抠图 / 颈部肩部过渡）.
 
     1. 引导滤波：以原图灰度为导向，把 1024→原图的插值锯齿贴合真实轮廓
     2. 形态学腐蚀：向内收 1~4px，割掉「前景与旧背景混合」的污染带
     3. 高斯羽化：向外 1~3px 渐变，得到发丝级透明过渡
     4. **内部不透明化**（_solidify_core）：把「人物内部却不等于 1」的 alpha 拉满
+
+    high_key=True 时（白底/浅灰底）额外做两件事，见 _is_high_key：
+        * 引导半径 0.006→0.003 短边、羽化 1~3px→1~1.4px；
+        * 过渡带压缩 _EDGE_TIGHT_BAND_COMPRESS。
+    深底一律走原参数（收紧会让红/蓝底出现剪刀切边）。
 
     【第 4 步为什么必须有】低分辨率引擎（u2net 320×320 升采样）或概率图被压扁时，
     人物躯干/脸颊内部会大面积停在 α≈0.6~0.8。此时合成公式
@@ -418,21 +672,32 @@ def _refine_alpha(alpha: np.ndarray, rgb: np.ndarray) -> np.ndarray:
     short = min(h, w)
 
     gray = cv2.cvtColor(rgb.astype(np.uint8), cv2.COLOR_RGB2GRAY).astype(np.float32) / 255.0
-    g_radius = max(2, int(round(short * 0.006)))
+    g_ratio = _EDGE_TIGHT_GUIDE_RATIO if high_key else 0.006
+    g_radius = max(2, int(round(short * g_ratio)))
     a_ref = np.clip(_guided_filter(gray, alpha.astype(np.float32), g_radius, 1e-4), 0.0, 1.0)
 
     erode_px = max(_EDGE_ERODE_MIN, min(_EDGE_ERODE_MAX, int(round(short * _EDGE_ERODE_RATIO))))
     k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (erode_px * 2 + 1,) * 2)
     a_ref = cv2.erode(a_ref, k, iterations=1)
 
-    feather_px = float(min(_EDGE_FEATHER_MAX, max(_EDGE_FEATHER_MIN, short * _EDGE_FEATHER_RATIO)))
+    if high_key:
+        feather_px = float(min(_EDGE_TIGHT_FEATHER_MAX,
+                               max(_EDGE_TIGHT_FEATHER_MIN,
+                                   short * _EDGE_TIGHT_FEATHER_RATIO)))
+    else:
+        feather_px = float(min(_EDGE_FEATHER_MAX, max(_EDGE_FEATHER_MIN, short * _EDGE_FEATHER_RATIO)))
     a_ref = cv2.GaussianBlur(a_ref, (0, 0), feather_px)
     a_ref = np.clip(a_ref, 0.0, 1.0).astype(np.float32)
 
     # 4) 内部不透明化：只把「离轮廓足够远」的区域顶到 1
     core = _core_weight(a_ref, feather_px)
-    a_ref = a_ref + (1.0 - a_ref) * core
-    return np.clip(a_ref, 0.0, 1.0).astype(np.float32)
+    a_ref = np.clip(a_ref + (1.0 - a_ref) * core, 0.0, 1.0).astype(np.float32)
+
+    # 5) 高调底：压缩过渡带（放在内部不透明化之后，避免被 core 权重拉回原坡）
+    if high_key:
+        a_ref = _compress_alpha_band(a_ref, _EDGE_TIGHT_BAND_COMPRESS)
+        a_ref = np.clip(a_ref + (1.0 - a_ref) * core, 0.0, 1.0).astype(np.float32)
+    return a_ref
 
 
 def _core_weight(alpha: np.ndarray, feather_px: float) -> np.ndarray:
@@ -532,17 +797,45 @@ def _decontaminate(rgb: np.ndarray, alpha: np.ndarray, bg_field: np.ndarray,
     return np.clip(out, 0.0, 255.0)
 
 
-def _blend_ambient(rgb: np.ndarray, alpha: np.ndarray, target_rgb) -> np.ndarray:
+def _blend_ambient(rgb: np.ndarray, alpha: np.ndarray, target_rgb,
+                   strength: Optional[float] = None) -> np.ndarray:
     """边缘环境光融合（PRD 二.衣物处理 / 三.环境光统一）.
 
     在 alpha 过渡带（0<α<1）混入目标背景色，模拟环境光在颈部/肩部/发丝
     边缘的微弱反射。既抑制旧背景残留的溢色（蓝底发白、红底发暗），
     又让人物不再是「贴在色块上的剪纸」。
+
+    strength 由 _ambient_strength_for(target_rgb) 给出：纯白底为 0
+    （白底混色会让深色头发描上白边），不传则用默认 _AMBIENT_STRENGTH。
     """
+    s = _AMBIENT_STRENGTH if strength is None else float(strength)
+    if s <= 0.0:
+        return rgb.astype(np.float32)
     band = np.clip(alpha * (1.0 - alpha) * 4.0, 0.0, 1.0)[..., None]
-    ambient = band * _AMBIENT_STRENGTH
+    ambient = band * s
     target = np.array(target_rgb, dtype=np.float32).reshape(1, 1, 3)
     return rgb.astype(np.float32) * (1.0 - ambient) + target * ambient
+
+
+def _is_pure_white(target_rgb) -> bool:
+    """是否「证件照纯白底」：判定标准是三个通道都 ≥250.
+
+    【为什么白底要单独走一套策略】证件照白底的审核是按像素卡阈值的
+    （普遍要求背景 RGB ≥ (250,250,250)），而背景合成里有两个效果天生会
+    把背景压暗、把边缘弄脏：
+
+      1. 软投影：把背景乘以 (1-shadow)。sigma 随图幅缩放（1680px 短边时
+         是 20px），灰雾从人物轮廓扩散到 120px 外，背景从 255 掉到 223。
+         这在蓝/红底上是「空间纵深」，在白底上就是「一圈脏灰」。
+      2. 环境光：把目标底色混进 alpha 过渡带。白底会把纯白混进深色头发，
+         发丝边缘平均被提亮 R+25.8 —— 看起来像描了一圈白边（发白的光晕）。
+         蓝底因为接近头发色调反而看不出来。
+
+    所以白底走「干净优先」：不投影、不加环境光，背景严格保持 255。
+    深色底（蓝/红/灰/绿）保留投影与环境光，观感更有立体感。
+    """
+    r, g, b = (float(c) for c in target_rgb)
+    return r >= 250.0 and g >= 250.0 and b >= 250.0
 
 
 def _shadow_strength_for(target_rgb) -> float:
@@ -559,12 +852,37 @@ def _shadow_strength_for(target_rgb) -> float:
     「白色背景换不对」——看起来像没换干净、留了一圈脏影。
     所以按背景相对亮度线性缩放：白底约 0.28 倍（Δ≈11 级，仅作空间暗示），
     深底保持原强度。
+
+    纯白底（三通道 ≥250）直接返回 0：审核要求 RGB≥250，任何压暗都可能踩线。
+    浅灰底（#F0F0F0 这类高调底）压到 0.25 倍：Δ 从 13 级降到 3 级，
+    刚好留一点「人站在纸上」的落点，但不会形成可见灰环。
     """
+    if _is_pure_white(target_rgb):
+        return 0.0
     r, g, b = (float(c) for c in target_rgb)
     luma = 0.2126 * r + 0.7152 * g + 0.0722 * b      # 0~255
     # 亮底(255) → 0.28；暗底(<=90) → 1.0；中间线性过渡
     t = max(0.0, min(1.0, (luma - 90.0) / (255.0 - 90.0)))
-    return _SHADOW_OPACITY * (1.0 - 0.72 * t)
+    op = _SHADOW_OPACITY * (1.0 - 0.72 * t)
+    if _is_high_key(target_rgb):
+        op *= 0.25
+    return op
+
+
+def _ambient_strength_for(target_rgb) -> float:
+    """按底色决定环境光强度：纯白底不混色，高调底很弱，其他底保持原强度.
+
+    见 _is_pure_white 的说明：白底混色会让深色头发描上一圈白边。
+    浅灰（#F0F0F0）也接近白，但它不是审核卡阈值的那种白，
+    保持较弱的环境光即可（0.4 倍），仍能压掉旧背景残留的溢色。
+    高调底的过渡带已经被 _refine_alpha 收紧，环境光再强就会在窄带里
+    堆出「一圈亮描边」，所以统一压到 0.3 倍。
+    """
+    if _is_pure_white(target_rgb):
+        return 0.0
+    if _is_high_key(target_rgb):
+        return _AMBIENT_STRENGTH * 0.3
+    return _AMBIENT_STRENGTH
 
 
 def _drop_shadow(alpha: np.ndarray, opacity: Optional[float] = None) -> np.ndarray:
@@ -681,9 +999,14 @@ def replace_background(
     alpha = _infer_alpha(image, engine)
     rgb = np.array(image.convert("RGB"), dtype=np.float32)
 
+    # 高调底（白/浅灰）与深底走两套边缘策略，见 _is_high_key：
+    # 深底的软边是景深，高调底的软边是「白雾/发光」。判定只看目标底色，
+    # 与图幅、肤色无关，所以放在最前面算一次。
+    high_key = _is_high_key(target_rgb)
+
     # 1) 边缘精修：去锯齿、去污染带、发丝级羽化、内部不透明化
     if refine_edge:
-        alpha = _refine_alpha(alpha, rgb)
+        alpha = _refine_alpha(alpha, rgb, high_key=high_key)
 
     # 1.5) 去色污：过渡带像素是「前景×α + 旧背景×(1-α)」的混合结果，
     #      不反解出纯前景就直接贴新底，会把旧底色一起搬过去 ——
@@ -702,8 +1025,10 @@ def replace_background(
         fg_clean = rgb
         dc_note = "off"
 
-    # 2) 环境光融合：过渡带混入背景色
-    fg = _blend_ambient(fg_clean, alpha, target_rgb) if ambient else fg_clean
+    # 2) 环境光融合：过渡带混入背景色（纯白底强度为 0，见 _ambient_strength_for）
+    ambient_op = _ambient_strength_for(target_rgb)
+    fg = (_blend_ambient(fg_clean, alpha, target_rgb, ambient_op)
+          if ambient else fg_clean)
 
     # 3) 纯色背景
     h, w = alpha.shape[:2]
@@ -711,9 +1036,10 @@ def replace_background(
     bg[...] = np.array(target_rgb, dtype=np.float32)
 
     # 4) 软投影先落在背景上（随后被人物遮住大部分，仅在底部/两侧露出）
-    #    强度按底色亮度缩放：白底必须弱，否则留一圈灰边 = 「白底没换干净」
+    #    强度按底色亮度缩放；纯白底为 0 —— 证件照白底要求 RGB≥250，
+    #    任何压暗都可能踩审核线，且视觉上会变成「一圈脏灰」。
     shadow_op = _shadow_strength_for(target_rgb)
-    if shadow:
+    if shadow and shadow_op > 0.0:
         sa = _drop_shadow(alpha, shadow_op)[..., None]
         bg = bg * (1.0 - sa)
 
@@ -722,11 +1048,13 @@ def replace_background(
     out = np.clip(fg * a3 + bg * (1.0 - a3), 0.0, 255.0).astype(np.uint8)
 
     edge_px = int(np.sum((alpha > 0.02) & (alpha < 0.98)))
+    band_px = int(np.sum((alpha > 0.01) & (alpha < 0.5)))
     audit = _audit_composition(out, alpha, target_rgb, rgb)
     logger.info(
         f"Background replaced (engine={engine} + edge refine): {bg_color} RGB={target_rgb} "
-        f"edge_px={edge_px} ambient={ambient} shadow={shadow} decon={dc_note} "
-        f"shadow_op={shadow_op:.3f} | "
+        f"high_key={high_key} edge_px={edge_px} halo_px={band_px} "
+        f"ambient={ambient} shadow={shadow} decon={dc_note} "
+        f"shadow_op={shadow_op:.3f} ambient_op={ambient_op:.3f} | "
         f"背景实测={audit['bg_measured']} Δ={audit['bg_delta']} "
         f"人物核心={audit['core_px']}px 偏移={audit['core_shift']}"
     )
@@ -741,4 +1069,14 @@ def replace_background(
             f"人物内部被背景色污染 偏移={audit['core_shift']} 偏置={audit['core_bias']} "
             f"—— 人物内部 alpha 不足 1，换底会让人脸/衣服整体染色"
         )
+    # 白底专项自检：审核普遍要求背景 RGB ≥ 250，这里按真实出图统计
+    if _is_pure_white(target_rgb):
+        pure = alpha < 0.001
+        if pure.any():
+            worst = float(out[pure].min())
+            if worst < 250:
+                logger.warning(
+                    f"白底最暗像素 {worst} < 250，可能不满足审核要求"
+                    f"（应无投影/无环境光，请检查 shadow_op/ambient_op）"
+                )
     return Image.fromarray(out)

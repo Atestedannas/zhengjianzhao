@@ -19,6 +19,14 @@ from app.core.image_engine.background import replace_background
 from app.core.image_engine.compressor import binary_compress
 from app.core.image_engine.format_converter import convert_format
 
+# 受证件照合规红线钳制的档位（见 docs/IMAGE_QUALITY_STANDARD.md）：
+#   OFF / COMPLIANT(=LIGHT=1) / 内部测试档 2、3。
+# ARTISTIC(4) 与 STUDIO(5) 都不在此集合内 —— 它们是非报名场景的强效档，
+# 出图不受「磨皮 ≤12%、纹理保留 ≥90%」等红线约束。
+_COMPLIANT_LEVELS = frozenset({
+    BeautyLevel.OFF, BeautyLevel.COMPLIANT, BeautyLevel.MEDIUM, BeautyLevel.HIGH,
+})
+
 
 @dataclass
 class ProcessParams:
@@ -35,8 +43,8 @@ class ProcessParams:
     bg_color: str = "white"
     output_format: str = "JPEG"
 
-    # === 美颜（证件照只允许「自然微调」COMPLIANT 档；艺术档仅非证件流程）===
-    beautify_level: int = BeautyLevel.COMPLIANT  # 0=OFF, 1=自然微调, 2/3=内部测试, 4=艺术档(非证件)
+    # === 美颜（证件照只允许「自然微调」COMPLIANT 档；艺术/精修档仅非报名场景）===
+    beautify_level: int = BeautyLevel.COMPLIANT  # 0=OFF, 1=自然微调, 2/3=内部测试, 4=艺术档, 5=影楼精修
     beautify_smooth: bool = True
     beautify_brighten: bool = True
     beautify_blemish: bool = True
@@ -305,8 +313,8 @@ def process_image(
         warnings.append("Skipped resize: target width/height is 0")
 
     # Step 3: 美颜处理（在目标分辨率上执行）
-    # 艺术档（4）是非证件照流程的强效档：显式关闭合规红线钳制；
-    # 其余档位（含误传的 2/3）仍默认 compliant=True 走红线钳制。
+    # 艺术档（4）与影楼精修档（5）都是「不受证件照合规红线约束」的档位：
+    # 显式关闭 compliant 钳制；其余档位（含误传的 2/3）仍默认走红线钳制。
     if params.beautify_level > BeautyLevel.OFF:
         try:
             image = apply_beautify(
@@ -316,7 +324,11 @@ def process_image(
                 brighten=params.beautify_brighten,
                 blemish=params.beautify_blemish,
                 adaptive=params.beautify_adaptive,
-                compliant=(params.beautify_level != BeautyLevel.ARTISTIC),
+                # 【为什么是「不在合规白名单」而不是「等于 ARTISTIC」】
+                # 以后每加一个非合规档位都要改这行，漏改的后果是「选了强档位却
+                # 出合规图」——静默降级，最难排查。反过来写：只有明确合规的
+                # OFF/COMPLIANT/内部测试档走红线，其余一律放开。
+                compliant=params.beautify_level in _COMPLIANT_LEVELS,
                 strength=params.retouch_strength,
                 tone=params.beautify_tone,
                 texture=params.beautify_texture,

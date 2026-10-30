@@ -138,11 +138,18 @@ async def process_photo(
         # custom:#RRGGBB 是用户自由取色（简历/工牌照等模板外场景），放行；
         # 真正的非法色名仍拒绝。bg_color 的最终解析在 background.parse_bg_color。
         is_custom = requested_bg.startswith("custom:")
+        # 【为什么按「色调分组」而不是字面色名放行】
+        # 模板里写的是组级意图（"blue" = 蓝底），而色板里给了 5 种蓝供用户
+        # 按报考公告挑 HEX（#438EDB / #0066CC / #1D8DD5 / #00BFF3 / #64C5FF）。
+        # 若只认字面量，用户点「考公深蓝」会被 400 拒绝 —— 明明模板要的就是蓝底。
+        # 所以同一分组视为合法；跨分组（模板要白底却提交深蓝）仍然拒绝。
         if requested_bg and not is_custom and requested_bg not in colors:
-            raise HTTPException(
-                status_code=400,
-                detail=f"模板 {tmpl.name} 不支持背景色 '{requested_bg}'，仅支持: {', '.join(colors)}",
-            )
+            from app.core.image_engine.background import same_color_family
+            if not any(same_color_family(requested_bg, c) for c in colors):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"模板 {tmpl.name} 不支持背景色 '{requested_bg}'，仅支持: {', '.join(colors)}",
+                )
         # 【关键修复】只有调用方**没有指定**背景色时才用模板默认值（colors[0]）。
         # 以前写的是 `colors[0] if bg_color == "white" else bg_color`，把「用户明确
         # 选了白底」也当成「没指定」，于是白底被换成蓝底/红底 —— 用户点白底，
@@ -162,9 +169,11 @@ async def process_photo(
         pass
 
     # === 参数范围校验（非法参数返回明确业务错误，而非裸 500） ===
-    if not (0 <= beautify_level <= 4):
+    if not (0 <= beautify_level <= 5):
         raise HTTPException(status_code=400,
-                            detail=f"beautify_level 必须在 0-4 之间（4=艺术档，仅非证件照流程），当前: {beautify_level}")
+                            detail=f"beautify_level 必须在 0-5 之间（4=艺术档，5=影楼精修；"
+                                   f"4/5 不受证件照合规红线约束，仅非报名场景使用），"
+                                   f"当前: {beautify_level}")
     if not (0.0 <= retouch_strength <= 1.0):
         raise HTTPException(status_code=400,
                             detail=f"retouch_strength 必须在 0-1 之间（还原度滑杆），当前: {retouch_strength}")
@@ -408,15 +417,67 @@ async def get_output_formats(
 async def get_bg_colors(
     current_user=Depends(get_current_user),
 ):
-    """获取支持的背景色列表."""
-    from app.core.image_engine.background import BG_COLOR_MAP
+    """获取支持的背景色列表（按底色分组 + 标准色号标注）.
+
+    【为什么带 group/label/hex/usage】
+    证件照报名系统的背景审核是按像素 RGB 卡阈值的，用户需要知道
+    「我选的这个蓝到底是 #438EDB 还是 #0066CC」，光看色块分不出来。
+    所以每个色都下发：分组（白/蓝/红/灰）、中文名、标准 HEX 色号、
+    适用场景说明（usage）。
+
+    【为什么同时下发 standard / all】
+    * standard：有明确使用场景的标准色号（前端默认铺这批，见 STANDARD_BG_COLORS）；
+    * all     ：全量色板（含历史键与扩展色，供历史记录回显 / 需要时展开）。
+    两个列表都按「色值去重」后给出，避免用户看到两个一模一样的色块。
+
+    【为什么按色值去重】
+    新色板里 blue_std 与历史键 blue 是同一个 #438EDB，white_std 与 white
+    同理。两者都要保留（老订单靠历史键复现），但色板上只应出现一次，
+    否则用户会看到两个一模一样的蓝块。
+    """
+    from app.core.image_engine.background import (
+        BG_COLOR_MAP, BG_COLOR_META, BG_COLOR_GROUP_ORDER, STANDARD_BG_COLORS,
+    )
+
+    seen = {}          # rgb -> 保留的条目
+    for name, rgb in BG_COLOR_MAP.items():
+        meta = BG_COLOR_META.get(name, {})
+        group = meta.get("group", "其他")
+        label = meta.get("label", name)
+        hexval = meta.get("hex", "")
+        usage = meta.get("usage", "")
+
+        # keep / custom 是特殊项，不做色值去重（rgb 是占位值 -1）
+        if name in ("keep", "custom"):
+            seen[name] = {"name": name, "rgb": list(rgb), "group": group,
+                          "label": label, "hex": hexval, "usage": usage}
+            continue
+
+        key = tuple(rgb)
+        if key in seen:
+            continue   # 同色值只保留第一个（历史键在前，保证老记录回显一致）
+        seen[name] = {"name": name, "rgb": list(rgb), "group": group,
+                      "label": label, "hex": hexval, "usage": usage}
+
+    # 标准色板：按 STANDARD_BG_COLORS 的业务顺序取，过滤掉被去重掉的别名，
+    # 首位固定「保留原背景」，末位固定「自定义」（前端据此渲染首尾两项）。
+    standard = []
+    for name in ["keep"] + STANDARD_BG_COLORS + ["custom"]:
+        item = seen.get(name)
+        if item and item["name"] not in {c["name"] for c in standard}:
+            standard.append(item)
+
+    colors = list(seen.values())
+    # 按分组顺序稳定排序，组内保持 BG_COLOR_MAP 的定义顺序
+    order = {g: i for i, g in enumerate(BG_COLOR_GROUP_ORDER)}
+    colors.sort(key=lambda c: order.get(c["group"], 99))
+
     return ResponseModel(
         code=200,
         data={
-            "colors": [
-                {"name": name, "rgb": list(rgb)}
-                for name, rgb in BG_COLOR_MAP.items()
-            ],
+            "colors": colors,
+            "standard": standard,
+            "groups": BG_COLOR_GROUP_ORDER,
         },
     )
 

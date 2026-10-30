@@ -1272,10 +1272,23 @@ function onCustomSizeFocus() {
   }
 }
 
+// 证件照标准背景色（与后端 BG_COLOR_MAP 逐色对齐；c 必须等于后端 RGB 的 HEX）。
+// 只收录有明确使用场景的色号：白 1 / 蓝 5 / 红 5 / 灰 3。
 var colorList = [
-  {v:'white',n:'白底',c:'#fff'},{v:'blue',n:'蓝底',c:'#438edb'},{v:'red',n:'红底',c:'#d52b1e'},
-  {v:'light_blue',n:'浅蓝',c:'#add8e6'},{v:'dark_blue',n:'深蓝',c:'#193780'},{v:'gray',n:'灰底',c:'#c0c0c0'},
-  {v:'green',n:'绿底',c:'#008000'},{v:'pink',n:'粉底',c:'#ffc0cb'},
+  {v:'white',n:'标准白 #FFFFFF',c:'#ffffff'},
+  {v:'blue_std',n:'标准天蓝 #438EDB',c:'#438edb'},
+  {v:'blue_gov',n:'考公深蓝 #0066CC',c:'#0066cc'},
+  {v:'blue_alt',n:'蓝色变体 #1D8DD5',c:'#1d8dd5'},
+  {v:'blue_cyan',n:'青蓝 #00BFF3',c:'#00bff3'},
+  {v:'sky_light',n:'学历浅蓝 #64C5FF',c:'#64c5ff'},
+  {v:'red_std',n:'正红 #FF0000',c:'#ff0000'},
+  {v:'red_deep',n:'深红 #DC143C',c:'#dc143c'},
+  {v:'red_crimson',n:'正深红 #CC0000',c:'#cc0000'},
+  {v:'red_alt',n:'红色变体 #CE0000',c:'#ce0000'},
+  {v:'red_dark',n:'暗红 #950208',c:'#950208'},
+  {v:'gray_light',n:'浅灰 #F0F0F0',c:'#f0f0f0'},
+  {v:'gray_mid',n:'中浅灰 #E6E6E6',c:'#e6e6e6'},
+  {v:'gray_deep',n:'灰 #D3D3D3',c:'#d3d3d3'},
 ];
 
 function renderColorOptions(){

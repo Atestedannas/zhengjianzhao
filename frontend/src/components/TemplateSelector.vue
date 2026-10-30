@@ -128,7 +128,7 @@
         <u-slider
           v-model="customParams.beautifyLevel"
           :min="0"
-          :max="3"
+          :max="5"
           :step="1"
           :block-size="22"
           activeColor="#4F6EF7"
@@ -190,7 +190,7 @@
         <u-slider
           v-model="presetBeautifyLevel"
           :min="0"
-          :max="3"
+          :max="5"
           :step="1"
           :block-size="22"
           activeColor="#4F6EF7"
@@ -249,30 +249,65 @@ const outputFormats = [
   { value: 'BMP', label: 'BMP' },
 ]
 
+/**
+ * 证件照标准背景色（与后端 BG_COLOR_MAP / STANDARD_BG_COLORS 逐色对齐）.
+ *
+ * 【为什么用标准色号而不是「蓝底/红底」各一个】报名公告给的是 HEX：
+ * 「蓝底 #0066CC」「红底 #CC0000」。只给一个近似色，用户没法对照，
+ * 出来的图可能因为色值差 20 级被判不合格。这里按《证件照常用背景色 RGB 参考》
+ * 收录有明确使用场景的色号，dotColor 必须与后端 RGB 完全一致。
+ */
 const colorOptions = [
   { value: 'keep', label: '原色', dotColor: 'transparent' },
-  { value: 'white', label: '白底', dotColor: '#FFFFFF' },
-  { value: 'blue', label: '蓝底', dotColor: '#438EDB' },
-  { value: 'red', label: '红底', dotColor: '#D52B1E' },
-  { value: 'light_blue', label: '浅蓝', dotColor: '#ADD8E6' },
-  { value: 'dark_blue', label: '深蓝', dotColor: '#193780' },
-  { value: 'gray', label: '灰底', dotColor: '#C0C0C0' },
-  { value: 'green', label: '绿底', dotColor: '#008000' },
-  { value: 'pink', label: '粉底', dotColor: '#FFC0CB' },
-  { value: 'navy', label: '藏青', dotColor: '#000080' },
-  { value: 'maroon', label: '深红', dotColor: '#800000' },
-  { value: 'sky_blue', label: '天蓝', dotColor: '#87CEEB' },
+  // 白
+  { value: 'white', label: '标准白', dotColor: '#FFFFFF' },
+  // 蓝（5 档，从通用天蓝到学历浅蓝）
+  { value: 'blue_std', label: '标准天蓝', dotColor: '#438EDB' },
+  { value: 'blue_gov', label: '考公深蓝', dotColor: '#0066CC' },
+  { value: 'blue_alt', label: '蓝色变体', dotColor: '#1D8DD5' },
+  { value: 'blue_cyan', label: '青蓝', dotColor: '#00BFF3' },
+  { value: 'sky_light', label: '学历浅蓝', dotColor: '#64C5FF' },
+  // 红（5 档，正红到暗红）
+  { value: 'red_std', label: '正红', dotColor: '#FF0000' },
+  { value: 'red_deep', label: '深红', dotColor: '#DC143C' },
+  { value: 'red_crimson', label: '正深红', dotColor: '#CC0000' },
+  { value: 'red_alt', label: '红色变体', dotColor: '#CE0000' },
+  { value: 'red_dark', label: '暗红', dotColor: '#950208' },
+  // 灰（签证/职称/学历采集）
+  { value: 'gray_light', label: '浅灰', dotColor: '#F0F0F0' },
+  { value: 'gray_mid', label: '中浅灰', dotColor: '#E6E6E6' },
+  { value: 'gray_deep', label: '灰', dotColor: '#D3D3D3' },
 ]
 
+/** 组级色名 → 同组标准色号（模板里写 "blue" 时，5 档蓝都要能选） */
+const GROUP_OF = {
+  white: '白', white_std: '白', pearl_white: '白',
+  blue: '蓝', blue_std: '蓝', blue_gov: '蓝', blue_alt: '蓝', blue_cyan: '蓝',
+  light_blue: '蓝', sky_blue: '蓝', sky_light: '蓝', dark_blue: '蓝', navy: '蓝',
+  red: '红', red_std: '红', red_deep: '红', red_crimson: '红', red_alt: '红',
+  red_dark: '红', wine_red: '红', maroon: '红',
+  gray: '灰', gray_light: '灰', gray_mid: '灰', gray_deep: '灰', light_gray: '灰', dark_gray: '灰',
+}
+
 const beautyLevelLabel = computed(() => {
-  const labels = { 0: '关闭', 1: '轻度', 2: '中度', 3: '高度' }
+  const labels = { 0: '关闭', 1: '自然微调', 2: '内部测试', 3: '艺术档', 4: '艺术档', 5: '影楼精修' }
   return labels[customMode.value ? customParams.beautifyLevel : presetBeautifyLevel.value] || '轻度'
 })
 
 const allowedColors = computed(() => {
   if (!selectedTemplate.value) return []
   const allowed = selectedTemplate.value.allowed_bg_colors || ['white']
-  return colorOptions.filter((c) => c.value === 'keep' || allowed.includes(c.value))
+  // 模板存的是组级意图（"blue"），面板里是 5 档蓝 —— 必须按分组放行，
+  // 否则「模板要蓝底」时只有字面叫 blue 的那一档能选，其余四档全被藏掉。
+  const allowedGroups = new Set(
+    allowed.map((n) => GROUP_OF[n]).filter((g) => !!g),
+  )
+  return colorOptions.filter((c) => {
+    if (c.value === 'keep') return allowed.includes('keep')
+    if (allowed.includes(c.value)) return true
+    const g = GROUP_OF[c.value]
+    return !!g && allowedGroups.has(g)
+  })
 })
 
 async function loadTemplates() {
@@ -297,7 +332,17 @@ async function loadTemplates() {
 function selectTemplate(tpl) {
   selectedId.value = tpl.id
   selectedTemplate.value = tpl
-  bgColor.value = (tpl.allowed_bg_colors && tpl.allowed_bg_colors[0]) ? tpl.allowed_bg_colors[0] : 'white'
+  // 默认色也要落在面板真实存在的色号上：模板可能写组级色名（"blue"），
+  // 直接取 allowed[0] 会让色点没有一个选中态（用户以为没选颜色）。
+  const allowed = tpl.allowed_bg_colors || []
+  const allowedGroups = new Set(allowed.map((n) => GROUP_OF[n]).filter(Boolean))
+  const preferred = colorOptions.find((c) => {
+    if (c.value === 'keep') return false
+    if (allowed.includes(c.value)) return true
+    const g = GROUP_OF[c.value]
+    return !!g && allowedGroups.has(g)
+  })
+  bgColor.value = preferred?.value || allowed[0] || 'white'
   emitChange()
 }
 

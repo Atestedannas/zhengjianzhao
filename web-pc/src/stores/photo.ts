@@ -23,11 +23,12 @@ import { useAuthStore } from './auth'
 /** 轮询间隔：1.5 秒 */
 const POLL_INTERVAL_MS = 1500
 /**
- * 最大轮询次数：120 次（约 3 分钟）。
- * 注意这是「后端兜底判失败（PROCESS_STUCK_MINUTES=15）」之前的客户端上限，
- * 真正让按钮恢复的是下面的 HARD_TIMEOUT_MS —— 用户不能对着转圈干等 3 分钟。
+ * 最大轮询次数：180 次（1.5s × 180 = 270 秒）。
+ * 必须**大于** HARD_TIMEOUT_MS（240s），否则轮询先放弃、硬超时永远不触发，
+ * 用户看到的是「处理时间较长」而不是准确的「超时」文案。
+ * 也要小于后端兜底判失败的 PROCESS_STUCK_MINUTES=15，避免和它抢结论。
  */
-const POLL_MAX_ATTEMPTS = 120
+const POLL_MAX_ATTEMPTS = 180
 /** 轮询超时文案 */
 const POLL_TIMEOUT_MESSAGE = '处理时间较长，请稍后在历史记录中查看'
 
@@ -45,18 +46,61 @@ const SUBMIT_TIMEOUT_MS = 30_000
 const STATUS_TIMEOUT_MS = 10_000
 /**
  * 客户端硬超时：超过它一定解除 loading。
- * 取 90 秒：正常出图 2~15 秒，抠图 + 美颜 + 压缩的慢机器也能在 60 秒内完成；
- * 再久就是异常，必须让用户拿到「可以重试」的确定状态，而不是无限转圈。
+ *
+ * 【为什么从 90 秒放宽到 240 秒】线上抠图引擎从 u2net（320×320）切到了
+ * BiRefNet（1024×1024），质量换时间：实测单张 1680×2240 抠图耗时 56~61 秒，
+ * 加上排队、美颜、压缩与 JPEG 编码，端到端 70~120 秒是常态。
+ * 90 秒会直接把正常出图判成「超时」——用户看到报错但后台其实已成功，
+ * 还会白白消耗一次次数。放宽到 240 秒，配合后端 nginx 的 300 秒读超时，
+ * 保证「客户端不会先于服务端放弃」。
+ *
+ * 注意必须与 nginx proxy_read_timeout（300s）保持 客户端 < 服务端，
+ * 否则网络慢时前端先断开、后端仍在跑，用户体验最差（报错但扣次数）。
  */
-const HARD_TIMEOUT_MS = 90_000
+const HARD_TIMEOUT_MS = 240_000
 /** 硬超时文案 */
-const HARD_TIMEOUT_MESSAGE = '处理超时（超过 90 秒未完成），已停止等待，请重试'
+const HARD_TIMEOUT_MESSAGE = '处理超时（超过 4 分钟未完成），已停止等待，请重试'
 
 /**
- * 常用背景色（面板里只展示这几个）.
- * 白/蓝/红是证件照的三大标准底色；其余色号保留在后端能力里，不在 UI 铺开。
+ * 证件照常用背景色（面板默认展示这批）.
+ *
+ * 【为什么从「白蓝红 3 个」扩到 14 个】上一版把面板砍到只剩白/蓝/红，
+ * 理由是「证件照 99% 就是这三个色」。但用户实打实的反馈是：报名公告里写的是
+ * 「蓝底 #0066CC」这种精确色号，白蓝红只给一个近似色，用户没法对照。
+ * 现在按《证件照常用背景色 RGB 参考》收录有明确使用场景的标准色号：
+ *   白  #FFFFFF
+ *   蓝  #438EDB（通用天蓝）/ #0066CC（考公深蓝）/ #1D8DD5 / #00BFF3 / #64C5FF（学历浅蓝）
+ *   红  #FF0000（正红）/ #DC143C（深红）/ #CC0000（正深红）/ #CE0000 / #950208（暗红）
+ *   灰  #F0F0F0（签证/职称）/ #E6E6E6 / #D3D3D3
+ * 顺序即面板顺序（白→蓝→红→灰），组头由后端 group 字段给出。
+ * 后端还有 30+ 扩展色，不在 UI 铺开：那是「功能列表」不是「可选答案」。
  */
-const PRIMARY_BG_COLORS = ['white', 'blue', 'red']
+const PRIMARY_BG_COLORS = [
+  'white',
+  'blue_std', 'blue_gov', 'blue_alt', 'blue_cyan', 'sky_light',
+  'red_std', 'red_deep', 'red_crimson', 'red_alt', 'red_dark',
+  'gray_light', 'gray_mid', 'gray_deep',
+]
+
+/** 机型兜底色板（后端 /bg-colors 不可达时用，色值必须与后端一致） */
+const FALLBACK_BG_COLORS: BgColor[] = [
+  { name: 'keep', rgb: [-1, -1, -1], group: '其他', label: '保留原背景', hex: '' },
+  { name: 'white', rgb: [255, 255, 255], group: '白', label: '标准白', hex: '#FFFFFF' },
+  { name: 'blue_std', rgb: [67, 142, 219], group: '蓝', label: '标准天蓝', hex: '#438EDB' },
+  { name: 'blue_gov', rgb: [0, 102, 204], group: '蓝', label: '考公深蓝', hex: '#0066CC' },
+  { name: 'blue_alt', rgb: [29, 141, 213], group: '蓝', label: '蓝色变体', hex: '#1D8DD5' },
+  { name: 'blue_cyan', rgb: [0, 191, 243], group: '蓝', label: '青蓝', hex: '#00BFF3' },
+  { name: 'sky_light', rgb: [100, 197, 255], group: '蓝', label: '学历浅蓝', hex: '#64C5FF' },
+  { name: 'red_std', rgb: [255, 0, 0], group: '红', label: '正红', hex: '#FF0000' },
+  { name: 'red_deep', rgb: [220, 20, 60], group: '红', label: '深红', hex: '#DC143C' },
+  { name: 'red_crimson', rgb: [204, 0, 0], group: '红', label: '正深红', hex: '#CC0000' },
+  { name: 'red_alt', rgb: [206, 0, 0], group: '红', label: '红色变体', hex: '#CE0000' },
+  { name: 'red_dark', rgb: [149, 2, 8], group: '红', label: '暗红', hex: '#950208' },
+  { name: 'gray_light', rgb: [240, 240, 240], group: '灰', label: '浅灰', hex: '#F0F0F0' },
+  { name: 'gray_mid', rgb: [230, 230, 230], group: '灰', label: '中浅灰', hex: '#E6E6E6' },
+  { name: 'gray_deep', rgb: [211, 211, 211], group: '灰', label: '灰', hex: '#D3D3D3' },
+  { name: 'custom', rgb: [-1, -1, -1], group: '其他', label: '自定义', hex: '' },
+]
 
 /** 后端处理失败 / 轮询超时：message 可直接展示给用户 */
 export class ProcessPollError extends Error {
@@ -218,7 +262,8 @@ export const usePhotoStore = defineStore('photo', () => {
   const selectedBgColor = ref('keep')
   // 自定义背景色（取色器）：选中「自定义」色板时生效，最终以 custom:#RRGGBB 发给后端
   const customBgColor = ref('#409EFF')
-  // 0=关闭原图直出, 1=自然微调（证件照默认档，后端强制合规红线）, 4=艺术档（仅非证件照）
+  // 0=关闭原图直出, 1=自然微调（证件照默认档，后端强制合规红线）,
+  // 4=艺术档（仅非证件照）, 5=影楼精修（强磨皮/匀肤/塑形/白净，仅非报名场景）
   const beautifyLevel = ref(1)
   // 「还原度」滑杆：0~1，1=完整档位强度，0.7=轻修（默认，以真实为主），0=原图
   const retouchStrength = ref(0.7)
@@ -246,33 +291,77 @@ export const usePhotoStore = defineStore('photo', () => {
   })
 
   /**
-   * 用户实际会用到的背景色（白 / 蓝 / 红 + 保留原背景 + 自定义）.
+   * 用户实际会用到的背景色（标准色号 + 保留原背景 + 自定义），按色调分组.
    *
-   * 【为什么砍掉其余 20 多种】后端支持 24 种色值，但全量铺在面板里是
-   * 「功能列表」而不是「可用选项」：证件照 99% 的场景就是白底、蓝底、红底，
-   * 其余色号既不符合报名要求，又把真正要点的三个色挤在角落（用户实测反馈：
-   * 「常用的颜色加上就好了」）。所以这里只留常用色 + 保留原背景 + 自定义入口，
-   * 后端能力不变（老记录里的其它色值仍能正常回显与复现）。
+   * 【为什么不把后端 30+ 色全铺】全量是「功能列表」而不是「可选答案」。
+   * 这里只取 PRIMARY_BG_COLORS（有明确使用场景的标准色号，见文件顶部注释），
+   * 再按后端 group 字段切成 白/蓝/红/灰 四组返回，前端画组头 + HEX + 场景说明。
+   *
+   * 【模板模式怎么过滤】模板里存的是「组级意图」（如 allowed=['blue','white']），
+   * 而面板里给了 5 种蓝。所以按**分组**过滤而不是字面色名：
+   * 模板允许蓝底 → 5 种蓝全部可选（用户按报考公告挑 HEX）；
+   * 模板只允许白底 → 蓝/红/灰都不展示。后端 process.py 用同一套分组判定，
+   * 前后端不会出现「界面能点、提交 400」的错位。
    */
   const availableBgColors = computed(() => {
     const byName = new Map(bgColors.value.map((c) => [c.name, c]))
-    const keep = byName.get('keep') || { name: 'keep', rgb: [-1, -1, -1] }
+    const keep: BgColor = byName.get('keep') || {
+      name: 'keep', rgb: [-1, -1, -1], group: '其他', label: '保留原背景', hex: '',
+    }
+    const custom: BgColor = byName.get('custom') || {
+      name: 'custom', rgb: [-1, -1, -1], group: '其他', label: '自定义', hex: '',
+    }
     const common = PRIMARY_BG_COLORS
       .map((name) => byName.get(name))
       .filter((c): c is BgColor => !!c)
-    // 模板模式：只留模板允许的颜色（不允许的色发上去后端会 400 拒绝）。
-    // 「保留原背景」同理：模板没写 keep 时不展示，否则点它就会被后端拒。
+
     const allowed = currentTemplate.value?.allowed_bg_colors
     if (allowed) {
-      const shown = common.filter((c) => allowed.includes(c.name))
-      const keepAllowed = allowed.includes('keep')
+      // 把模板允许的「组级色名」映射成分组集合，再据此过滤标准色号
+      const allowedGroups = new Set(
+        allowed
+          .map((n) => byName.get(n)?.group)
+          .filter((g): g is string => !!g && g !== '其他'),
+      )
+      const shown = common.filter((c) => allowed.includes(c.name)
+        || (c.group && allowedGroups.has(c.group)))
       return [
-        ...(keepAllowed ? [keep] : []),
+        ...(allowed.includes('keep') ? [keep] : []),
         ...shown,
-        { name: 'custom', rgb: [-1, -1, -1] },
+        custom,
       ]
     }
-    return [keep, ...common, { name: 'custom', rgb: [-1, -1, -1] }]
+    return [keep, ...common, custom]
+  })
+
+  /**
+   * 分组后的色板（前端按组渲染标题）.
+   * 顺序固定「白→蓝→红→灰→其他」，组内保持 PRIMARY_BG_COLORS 的业务顺序，
+   * 「保留原背景」永远排第一组，「自定义」永远排最后。
+   */
+  const groupedBgColors = computed(() => {
+    const list = availableBgColors.value
+    const order = ['白', '蓝', '红', '灰', '其他']
+    const groups = new Map<string, BgColor[]>()
+    // 特殊项先单独摘出来，避免被排进「其他」组中间
+    const specials = list.filter((c) => c.name === 'keep' || c.name === 'custom')
+    const keep = specials.find((c) => c.name === 'keep')
+    const custom = specials.find((c) => c.name === 'custom')
+
+    for (const c of list) {
+      if (c.name === 'keep' || c.name === 'custom') continue
+      const g = c.group || '其他'
+      if (!groups.has(g)) groups.set(g, [])
+      groups.get(g)!.push(c)
+    }
+    const out: { group: string; colors: BgColor[] }[] = []
+    if (keep) out.push({ group: '原图', colors: [keep] })
+    for (const g of order) {
+      const colors = groups.get(g)
+      if (colors && colors.length) out.push({ group: g, colors })
+    }
+    if (custom) out.push({ group: '自定义', colors: [custom] })
+    return out
   })
 
   /** 实际发给后端的 bg_color：选中自定义时组装为 custom:#RRGGBB */
@@ -323,35 +412,17 @@ export const usePhotoStore = defineStore('photo', () => {
     if (bgColors.value.length > 0) return
     try {
       const result = await getBgColors()
-      bgColors.value = result.colors
+      // 优先用后端下发的 standard（有明确场景的标准色号），
+      // 拿不到时退回全量（老后端没有 standard 字段）。
+      bgColors.value = result.standard?.length ? result.standard : result.colors
+      // 标准色板缺失时补全：老版本后端只下发全量色值，standard 里可能缺
+      // blue_gov 这类新键，缺了就补 fallback，避免面板少项、用户选不到。
+      const have = new Set(bgColors.value.map((c) => c.name))
+      const missing = FALLBACK_BG_COLORS.filter((c) => !have.has(c.name))
+      if (missing.length) bgColors.value = [...bgColors.value, ...missing]
     } catch {
-      // 预设默认背景色
-      bgColors.value = [
-        { name: 'keep', rgb: [-1, -1, -1] },
-        { name: 'white', rgb: [255, 255, 255] },
-        { name: 'pearl_white', rgb: [245, 245, 245] },
-        { name: 'blue', rgb: [67, 142, 219] },
-        { name: 'dark_blue', rgb: [25, 55, 128] },
-        { name: 'light_blue', rgb: [173, 216, 230] },
-        { name: 'sky_blue', rgb: [135, 206, 235] },
-        { name: 'red', rgb: [213, 43, 30] },
-        { name: 'wine_red', rgb: [158, 31, 53] },
-        { name: 'maroon', rgb: [128, 0, 0] },
-        { name: 'gray', rgb: [192, 192, 192] },
-        { name: 'light_gray', rgb: [220, 220, 220] },
-        { name: 'dark_gray', rgb: [96, 96, 96] },
-        { name: 'green', rgb: [0, 128, 0] },
-        { name: 'forest_green', rgb: [34, 85, 51] },
-        { name: 'mint_green', rgb: [199, 237, 204] },
-        { name: 'pink', rgb: [255, 192, 203] },
-        { name: 'rose', rgb: [255, 228, 225] },
-        { name: 'cream', rgb: [255, 253, 208] },
-        { name: 'champagne', rgb: [247, 231, 206] },
-        { name: 'navy', rgb: [0, 0, 128] },
-        { name: 'teal', rgb: [0, 128, 128] },
-        { name: 'lavender', rgb: [230, 230, 250] },
-        { name: 'custom', rgb: [-1, -1, -1] },
-      ]
+      // 接口不可达：用与后端逐色一致的内置色板兜底（离线预览也能选全）
+      bgColors.value = FALLBACK_BG_COLORS.map((c) => ({ ...c }))
     }
   }
 
@@ -587,12 +658,24 @@ export const usePhotoStore = defineStore('photo', () => {
       outputFormat.value = tmpl.output_format
       customWidth.value = tmpl.width_px
       customHeight.value = tmpl.height_px
-      // 默认背景色：优先用模板允许的第一个「常用色」。
-      // 【为什么不能直接用 allowed[0]】面板现在只展示白/蓝/红（+保留原背景/自定义），
-      // 若模板的 allowed[0] 是 pearl_white 之类的非常用色，UI 上就没有任何一项是
-      // 选中态，用户会以为「没选颜色」。所以这里收敛到常用色集合内。
+      // 默认背景色：优先用模板允许的色（同分组也算，见 availableBgColors）。
+      // 【为什么不能直接用 allowed[0]】模板可能写组级色名（"blue"），也可能写
+      // 非常用色（pearl_white）。直接取 allowed[0]，UI 上就没有任何一项是选中态，
+      // 用户会以为「没选颜色」。所以先把组级色名映射成面板里真实存在的标准色号，
+      // 再取第一个命中项；全都没命中才退回 allowed[0]。
       const allowed: string[] = tmpl.allowed_bg_colors || []
-      const preferred = allowed.find((name) => PRIMARY_BG_COLORS.includes(name))
+      const byName = new Map(bgColors.value.map((c) => [c.name, c]))
+      const allowedGroups = new Set(
+        allowed
+          .map((n) => byName.get(n)?.group)
+          .filter((g): g is string => !!g && g !== '其他'),
+      )
+      const preferred = PRIMARY_BG_COLORS.find((name) => {
+        if (!byName.has(name)) return false
+        if (allowed.includes(name)) return true
+        const g = byName.get(name)?.group
+        return !!g && allowedGroups.has(g)
+      })
       selectedBgColor.value = preferred || (allowed.length > 0 ? allowed[0] : 'white')
     }
   }
@@ -628,6 +711,7 @@ export const usePhotoStore = defineStore('photo', () => {
     // 计算属性
     currentTemplate,
     availableBgColors,
+    groupedBgColors,
     // 方法
     loadTemplates,
     loadSizePresets,

@@ -236,11 +236,13 @@ def test_decontaminate_removes_old_bg_cast():
     因为出图用的就是这条 alpha 链路。若用素材的真值 alpha 造理想图，
     误差里会混进「alpha 估计偏差」这个与去色污无关的成分，测不出真实效果
     （实测那样做只能测出 5% 改善，而正确口径是 12%）。
+    同理，白底现在走「高调底」边缘策略（_is_high_key），理想图必须用
+    完全相同的 alpha 链路（high_key=True），否则测的是「换了一套边缘参数」。
     """
     rgb, alpha, fg_true = _soft_edge_portrait()
     target = np.array((255, 255, 255), np.float32).reshape(1, 1, 3)
     img = _to_img(rgb)
-    a_eng = B._refine_alpha(B._infer_alpha(img, B.resolve_engine()), rgb)
+    a_eng = B._refine_alpha(B._infer_alpha(img, B.resolve_engine()), rgb, high_key=True)
     ideal = np.clip(fg_true * a_eng[..., None] + target * (1 - a_eng[..., None]), 0, 255)
     ring = (alpha > 0.15) & (alpha < 0.85)     # 真实过渡带
 
@@ -352,6 +354,133 @@ def _to_img(arr):
     return Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8))
 
 
+# ---------------------------------------------------------------- 高调底收边
+def _hard_portrait(h=1200, w=840):
+    """硬边人像：alpha 二值，本身没有任何渐变.
+
+    【为什么不能用带渐变的素材做这条测试】合成的软边素材自带一段 6~8px 的
+    线性坡，宽度由素材决定、与精修参数无关，会把两种参数的区别稀释掉
+    （实测那样比出来的半透明带比值只有 0.67~0.73，看起来像「收边无效」）。
+    用硬边遮罩，过渡带宽度就完全由 _refine_alpha 的参数决定 —— 这才是被测对象。
+    """
+    yy, xx = np.mgrid[0:h, 0:w]
+    head = ((xx - w * 0.5) ** 2 / (w * 0.18) ** 2
+            + (yy - h * 0.33) ** 2 / (h * 0.16) ** 2) <= 1
+    body = (np.abs(xx - w * 0.5) < w * 0.30) & (yy > h * 0.52)
+    mask = (head | body).astype(np.float32)
+    rgb = np.full((h, w, 3), 255, np.float32)
+    rgb[mask > 0] = (120, 92, 74)          # 深棕头发 / 深色衣
+    return rgb, mask
+
+
+def _transition_width(alpha):
+    """过渡带的**有效像素宽度** = 半透明带面积 ÷ 轮廓周长.
+
+    【为什么不用扫描线量】扫描线只在恰好垂直穿过轮廓时有意义，椭圆/肩线
+    这类斜边会把测量值抬到 2~20px 乱跳（实测同一张图不同 y 差 4 倍）。
+    面积 ÷ 周长是几何上的平均带厚，与图幅、轮廓走向都无关，可跨尺寸比较。
+    """
+    import cv2
+    band = int(((alpha > 0.01) & (alpha < 0.5)).sum())
+    fg = (alpha > 0.5).astype(np.uint8)
+    k = np.ones((3, 3), np.uint8)
+    perim = int((cv2.morphologyEx(fg, cv2.MORPH_GRADIENT, k) > 0).sum())
+    return band / max(perim, 1), band
+
+
+def test_high_key_alpha_band_is_narrower():
+    """白底（高调底）的 alpha 过渡带必须显著窄于深底 —— 这是「白底发虚」的根治.
+
+    【问题】深底上的软边是景深，白底上的软边是「一层白雾 + 头发在发光」。
+    实测真实人像（1680×2240，BiRefNet + 现参数）：
+        轮廓过渡带（luma 246→60）     12.0px → 4.0px
+        半透明带（0.01<α<0.5）像素     48659 → 14078（-71%）
+        背景四角                       254 → 255，缩到一寸后无锯齿
+    合成硬边人像（1200×840）同一套参数：有效带厚 0.94px → 0.50px（-47%）。
+    两条链路方向一致，这里用合成图做回归，阈值取「至少窄 35%」。
+    """
+    rgb, mask = _hard_portrait()
+    a_deep = B._refine_alpha(mask.copy(), rgb, high_key=False)
+    a_high = B._refine_alpha(mask.copy(), rgb, high_key=True)
+
+    w_deep, band_deep = _transition_width(a_deep)
+    w_high, band_high = _transition_width(a_high)
+    assert band_deep > 0, "对照组没有过渡带，无法比较"
+    assert w_high < w_deep * 0.65, (
+        f"高调底过渡带未收紧：{w_deep:.2f}px → {w_high:.2f}px（应至少窄 35%）"
+    )
+    # 不能剃成二值硬切：中间值必须仍存在（发丝/衣领的真实半透明）
+    mid = int(((a_high > 0.2) & (a_high < 0.8)).sum())
+    assert mid > 0, "高调底把过渡带剃成了二值切边（半透明像素消失）"
+    # 前景面积不能变（收边只准改过渡带，不许啃掉人物）
+    shrink = 1.0 - a_high.sum() / max(a_deep.sum(), 1e-6)
+    assert abs(shrink) < 0.01, f"高调底前景面积变化 {shrink:.2%}（收边过度/丢失人物）"
+    print(f"  [OK] 高调底收边: 有效带厚 {w_deep:.2f}px → {w_high:.2f}px "
+          f"({(1 - w_high / w_deep) * 100:.0f}% 收紧)，半透明带 {band_deep} → {band_high}px，"
+          f"中值带 {mid}px 仍在，前景面积变化 {shrink:.2%}")
+
+
+def test_high_key_flag_classification():
+    """高调底判定：白与近白为 True，标准蓝/红/中灰为 False."""
+    assert B._is_high_key((255, 255, 255)) is True
+    assert B._is_high_key((240, 240, 240)) is True        # #F0F0F0 英国签证浅灰
+    assert B._is_high_key(B.BG_COLOR_MAP["blue_std"]) is False
+    assert B._is_high_key(B.BG_COLOR_MAP["blue_gov"]) is False
+    assert B._is_high_key(B.BG_COLOR_MAP["red_std"]) is False
+    assert B._is_high_key(B.BG_COLOR_MAP["gray_deep"]) is False
+    # 纯白底投影/环境光必须都为 0（审核要求 RGB≥250）
+    assert B._shadow_strength_for((255, 255, 255)) == 0.0
+    assert B._ambient_strength_for((255, 255, 255)) == 0.0
+    # 高调底的环境光必须弱于深底（窄带上强混色会堆出亮描边）
+    assert B._ambient_strength_for((240, 240, 240)) < B._ambient_strength_for(B.BG_COLOR_MAP["blue_std"])
+    print("  [OK] 高调底判定与投影/环境光策略一致")
+
+
+def test_standard_palette_matches_reference_table():
+    """标准色板必须与《证件照常用背景色 RGB 参考》逐色一致（HEX 由 RGB 反推）."""
+    expect = {
+        "white": (255, 255, 255),        # #FFFFFF
+        "blue_std": (67, 142, 219),      # #438EDB
+        "blue_gov": (0, 102, 204),       # #0066CC
+        "blue_alt": (29, 141, 213),      # #1D8DD5
+        "blue_cyan": (0, 191, 243),      # #00BFF3
+        "sky_light": (100, 197, 255),    # #64C5FF
+        "red_std": (255, 0, 0),          # #FF0000
+        "red_deep": (220, 20, 60),       # #DC143C
+        "red_crimson": (204, 0, 0),      # #CC0000
+        "red_alt": (206, 0, 0),          # #CE0000
+        "red_dark": (149, 2, 8),         # #950208
+        "gray_light": (240, 240, 240),   # #F0F0F0
+        "gray_mid": (230, 230, 230),     # #E6E6E6
+        "gray_deep": (211, 211, 211),    # #D3D3D3
+    }
+    assert list(B.STANDARD_BG_COLORS) == list(expect), (
+        f"标准色板顺序/成员不符：{B.STANDARD_BG_COLORS}"
+    )
+    for name, rgb in expect.items():
+        assert B.BG_COLOR_MAP[name] == rgb, f"{name} 色值 {B.BG_COLOR_MAP[name]} != {rgb}"
+        meta = B.BG_COLOR_META[name]
+        want_hex = "#%02X%02X%02X" % rgb
+        assert meta["hex"] == want_hex, f"{name} HEX {meta['hex']} != {want_hex}"
+        assert meta.get("usage"), f"{name} 缺少使用场景说明"
+    # 分组必须齐全，前端靠它画组头
+    groups = {B.bg_color_group(n) for n in expect}
+    assert groups == {"白", "蓝", "红", "灰"}, f"分组异常: {groups}"
+    print(f"  [OK] 标准色板 {len(expect)} 色与参考表逐色一致，HEX 全部可反推")
+
+
+def test_template_color_family_gate():
+    """模板按色调分组放行：允许 blue 时可交任何蓝，白底模板仍拒绝蓝."""
+    assert B.same_color_family("blue", "blue_gov")
+    assert B.same_color_family("blue", "sky_light")
+    assert B.same_color_family("white", "white")
+    assert not B.same_color_family("blue", "red_std")
+    assert not B.same_color_family("white", "gray_light")
+    # 「其他」组不当同族（绿/粉/紫之间不能互相顶替）
+    assert not B.same_color_family("green", "pink")
+    print("  [OK] 模板色族判定: 蓝系互通 / 跨色族拒绝 / 其他组不互通")
+
+
 if __name__ == "__main__":
     print("=== 换底染色 / 白底回归测试 ===")
     for fn in (
@@ -369,6 +498,10 @@ if __name__ == "__main__":
         test_decontaminate_leaves_interior_untouched,
         test_white_bg_shadow_is_weak,
         test_white_bg_corners_are_white,
+        test_high_key_alpha_band_is_narrower,
+        test_high_key_flag_classification,
+        test_standard_palette_matches_reference_table,
+        test_template_color_family_gate,
     ):
         print(f"[{fn.__name__}]")
         fn()

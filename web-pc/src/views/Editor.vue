@@ -193,18 +193,32 @@
                 <span class="panel-summary">{{ getColorLabel(photoStore.selectedBgColor) }}</span>
               </template>
 
-              <div class="bg-color-grid">
+              <div class="bg-color-groups">
                 <div
-                  v-for="color in photoStore.availableBgColors"
-                  :key="color.name"
-                  class="bg-color-item"
-                  :class="{ active: photoStore.selectedBgColor === color.name }"
-                  @click="photoStore.selectedBgColor = color.name"
+                  v-for="g in photoStore.groupedBgColors"
+                  :key="g.group"
+                  class="bg-color-group"
                 >
-                  <div class="color-swatch" :style="swatchStyle(color)"></div>
-                  <span class="color-name">{{ getColorLabel(color.name) }}</span>
+                  <div class="bg-group-title">{{ g.group }}</div>
+                  <div class="bg-color-grid">
+                    <div
+                      v-for="color in g.colors"
+                      :key="color.name"
+                      class="bg-color-item"
+                      :class="{ active: photoStore.selectedBgColor === color.name }"
+                      :title="colorTip(color)"
+                      @click="photoStore.selectedBgColor = color.name"
+                    >
+                      <div class="color-swatch" :style="swatchStyle(color)"></div>
+                      <span class="color-name">{{ getColorLabel(color.name) }}</span>
+                      <span class="color-hex" v-if="color.hex">{{ color.hex }}</span>
+                    </div>
+                  </div>
                 </div>
               </div>
+              <p class="setting-hint bg-usage-hint" v-if="currentColorUsage">
+                {{ currentColorUsage }}
+              </p>
               <div class="custom-bg-row" v-if="photoStore.selectedBgColor === 'custom'">
                 <el-color-picker v-model="photoStore.customBgColor" size="small" />
                 <span class="setting-hint">自定义背景色 {{ photoStore.customBgColor }}</span>
@@ -214,9 +228,9 @@
             <!-- ③ 自然微调（含美颜参数与对比说明） -->
             <el-collapse-item name="beautify">
               <template #title>
-                <span class="panel-title"><el-icon><MagicStick /></el-icon>自然微调</span>
+                <span class="panel-title"><el-icon><MagicStick /></el-icon>美颜</span>
                 <span class="panel-summary">
-                  {{ beautifyOn ? `已开启 · 强度 ${strengthPercent}%` : '原图直出' }}
+                  {{ beautifySummary }}
                 </span>
               </template>
 
@@ -298,7 +312,17 @@
                   便于逐项对比效果。
                 </p>
 
-                <el-checkbox v-model="artisticOn" :disabled="photoStore.idPhotoAlign">
+                <el-checkbox v-model="studioOn" :disabled="photoStore.idPhotoAlign">
+                  影楼精修（强磨皮 + 匀肤 + 补光塑形 + 肤色白平衡 + 眼妆，仅非报名场景）
+                </el-checkbox>
+                <p v-if="studioOn" class="compliance-note">
+                  精修档走独立的「影楼预算」：磨皮尺度放大到色块级、分区肤色预算加倍、
+                  并额外做补光/塑形/去黄/眼白提净。仍然<b>不做任何几何改动</b>
+                  （无瘦脸/大眼/改眼距/改下颌），但磨皮强度已超出证件照红线，
+                  报名、护照、签证等场景请改用「自然微调」。
+                </p>
+
+                <el-checkbox v-model="artisticOn" :disabled="photoStore.idPhotoAlign || studioOn">
                   艺术增强（轻磨皮 + 通透 + 眼神光，仅非证件照）
                 </el-checkbox>
                 <p v-if="artisticOn" class="compliance-note">
@@ -412,7 +436,26 @@ const openPanels = ref<string[]>(['template', 'bg', 'beautify', 'advanced'])
 const beautifyOn = computed({
   get: () => photoStore.beautifyLevel > 0,
   set: (on: boolean) => {
-    photoStore.beautifyLevel = on ? (photoStore.beautifyLevel === 4 ? 4 : 1) : 0
+    photoStore.beautifyLevel = on
+      ? (photoStore.beautifyLevel === 4 || photoStore.beautifyLevel === 5
+        ? photoStore.beautifyLevel
+        : 1)
+      : 0
+  },
+})
+
+/**
+ * 「影楼精修」档（后端 STUDIO=5）：仅非报名场景可用，与艺术档互斥。
+ *
+ * 【为什么单独一个开关而不是塞进档位下拉】档位是数字，用户看不懂 1/4/5；
+ * 而「自然微调 / 艺术增强 / 影楼精修」是三种**使用场景**，用三个语义化开关
+ * 表达最直接。互斥由这里的 setter 保证：打开精修自动关掉艺术档，反之亦然。
+ * 证件照对齐（报名场景）开启时禁用，防止把超红线的档位用在报名照上。
+ */
+const studioOn = computed({
+  get: () => photoStore.beautifyLevel === 5,
+  set: (on: boolean) => {
+    photoStore.beautifyLevel = on ? 5 : 1
   },
 })
 
@@ -434,6 +477,19 @@ const strengthPercent = computed({
   set: (v: number) => {
     photoStore.retouchStrength = v / 100
   },
+})
+
+/**
+ * 美颜面板标题右侧的摘要：一眼看出当前是哪一档。
+ * 【为什么要区分档位名】三个档位的观感差别很大（自然微调/艺术/影楼精修），
+ * 只显示「已开启 · 强度 70%」会让用户以为换了档位只是强度变了。
+ */
+const beautifySummary = computed(() => {
+  if (!beautifyOn.value) return '原图直出'
+  const levelName = studioOn.value
+    ? '影楼精修'
+    : (artisticOn.value ? '艺术增强' : '自然微调')
+  return `${levelName} · 强度 ${strengthPercent.value}%`
 })
 
 /**
@@ -471,18 +527,38 @@ const progressPercent = computed(() => {
 
 const colorLabels: Record<string, string> = {
   keep: '保留原背景',
-  white: '白色',
+  // ---- 白 ----
+  white: '标准白',
+  white_std: '标准白',
   pearl_white: '珍珠白',
-  blue: '标准蓝',
-  dark_blue: '深蓝',
+  // ---- 蓝（标准色号，按报考公告挑）----
+  blue: '标准天蓝',
+  blue_std: '标准天蓝',
+  blue_gov: '考公深蓝',
+  blue_alt: '蓝色变体',
+  blue_cyan: '青蓝',
+  sky_light: '学历浅蓝',
   light_blue: '浅蓝',
   sky_blue: '天蓝',
+  dark_blue: '护照深蓝',
+  navy: '藏青',
+  // ---- 红 ----
   red: '标准红',
+  red_std: '正红',
+  red_deep: '深红',
+  red_crimson: '正深红',
+  red_alt: '红色变体',
+  red_dark: '暗红',
   wine_red: '酒红',
-  maroon: '深红',
-  gray: '灰色',
-  light_gray: '浅灰',
+  maroon: '深红褐',
+  // ---- 灰 ----
+  gray_light: '浅灰',
+  gray_mid: '中浅灰',
+  gray_deep: '灰',
+  gray: '中灰',
+  light_gray: '浅灰（旧）',
   dark_gray: '深灰',
+  // ---- 其他 ----
   green: '绿色',
   forest_green: '墨绿',
   mint_green: '薄荷绿',
@@ -490,7 +566,6 @@ const colorLabels: Record<string, string> = {
   rose: '玫瑰粉',
   cream: '米色',
   champagne: '香槟米',
-  navy: '藏青',
   teal: '青色',
   lavender: '淡紫',
   custom: '自定义',
@@ -499,6 +574,26 @@ const colorLabels: Record<string, string> = {
 function getColorLabel(name: string): string {
   return colorLabels[name] || name
 }
+
+/**
+ * 色块 tooltip：优先用后端下发的「中文名 + HEX + 适用场景」。
+ * 色板现在有 5 种蓝、5 种红，光看色块分辨不出 #438EDB 与 #0066CC，
+ * 而报名公告里写的偏偏就是 HEX —— 所以每个色块必须把这三个信息带出来。
+ */
+function colorTip(color: { name: string; label?: string; hex?: string; usage?: string }): string {
+  const name = getColorLabel(color.name)
+  const parts = [name]
+  if (color.hex) parts.push(color.hex)
+  if (color.usage) parts.push(color.usage)
+  return parts.join(' · ')
+}
+
+/** 当前选中色的适用场景说明（色板下方一行提示，避免用户猜） */
+const currentColorUsage = computed(() => {
+  const list = photoStore.availableBgColors as Array<{ name: string; usage?: string }>
+  const hit = list.find((c) => c.name === photoStore.selectedBgColor)
+  return hit?.usage || ''
+})
 
 /** 色板样式：普通色用 rgb；keep 画斜纹占位；custom 用取色器当前值 */
 function swatchStyle(color: { name: string; rgb: number[] }): Record<string, string> {
@@ -523,8 +618,24 @@ function startElapsedTimer() {
   elapsedTimer = setInterval(() => {
     const sec = Math.floor((Date.now() - started) / 1000)
     photoStore.processingElapsed = sec
-    // 预计剩余：初估 15 秒，随时间保守回落到 5 秒，避免显示「还需 -3 秒」
-    const eta = Math.max(5, 15 - Math.floor(sec / 6))
+    /**
+     * 预计剩余时间估算。
+     *
+     * 【为什么不再用「初估 15 秒、每秒回落到 5 秒」】换 BiRefNet 后单张实测
+     * 56~61 秒，端到端 70~120 秒。旧逻辑第 60 秒就开始显示「还需 5 秒」，
+     * 然后一直卡在 5 秒不动 —— 用户会以为程序挂了，比不显示更糟。
+     *
+     * 新模型：分段估计，越接近真实耗时越保守，且永不显示负数。
+     *   <20s → 60s（还没到主体耗时段，别给「马上好」的错觉）
+     *   <45s → 30s
+     *   <70s → 15s
+     *   再久 → 10s 起步，每 10 秒加回 5 秒（进度因此始终在推进，不出现停滞感）
+     */
+    let eta: number
+    if (sec < 20) eta = 60
+    else if (sec < 45) eta = 30
+    else if (sec < 70) eta = 15
+    else eta = 10 + Math.floor((sec - 70) / 10) * 5
     photoStore.processingEta = eta
   }, 500)
 }
@@ -1047,21 +1158,37 @@ async function handleDownload() {
   font-size: 16px;
 }
 
-/* BG Colors：只展示「保留原背景 + 白/蓝/红 + 自定义」共 5 项，
-   3 列更宽松（原来 24 色挤 4 列，真正要点的白蓝红淹没在一堆色号里） */
+/* BG Colors：按色调分组（白/蓝/红/灰），每色标 HEX。
+   原来 24 色挤 4 列、真正要点的白蓝红淹没在一堆色号里；现在只铺有明确
+   使用场景的标准色号，分组 + 色号 + 场景说明，用户按报考公告对号入座。 */
+.bg-color-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.bg-group-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #909399;
+  margin-bottom: 6px;
+  padding-left: 2px;
+  letter-spacing: 0.5px;
+}
+
 .bg-color-grid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 12px;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
 }
 
 .bg-color-item {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   cursor: pointer;
-  padding: 8px;
+  padding: 6px 2px;
   border-radius: 8px;
   transition: all 0.2s;
 }
@@ -1075,8 +1202,8 @@ async function handleDownload() {
 }
 
 .color-swatch {
-  width: 40px;
-  height: 40px;
+  width: 34px;
+  height: 34px;
   border-radius: 50%;
   border: 2px solid #fff;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
@@ -1087,8 +1214,23 @@ async function handleDownload() {
 }
 
 .color-name {
-  font-size: 12px;
+  font-size: 11px;
   color: #606266;
+  line-height: 1.2;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.color-hex {
+  font-size: 10px;
+  color: #a8abb2;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  line-height: 1;
+}
+
+.bg-usage-hint {
+  margin-top: 8px;
+  line-height: 1.5;
 }
 
 /* Setting Row */
@@ -1211,7 +1353,7 @@ async function handleDownload() {
   }
 
   .bg-color-grid {
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: repeat(3, 1fr);
   }
 }
 </style>

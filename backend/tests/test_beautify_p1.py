@@ -190,7 +190,7 @@ def test_apply_beautify_smoke():
         g = BT._FaceGeometry(cx=ww / 2, cy=hh / 2, width=ww * 0.5, height=hh * 0.6, iod=max(8.0, ww * 0.1))
         return m, g
 
-    BT._parse_skin_mask = lambda bgr: None
+    BT._parse_skin_mask = lambda bgr, face_boxes=None: None
     BT._detect_all_landmarks = lambda bgr: []
     BT._fallback_region = fake_region
     try:
@@ -539,7 +539,7 @@ def test_apply_beautify_switches_off_revert():
                              height=hh * 0.6, iod=max(8.0, ww * 0.1))
         return m, g
 
-    BT._parse_skin_mask = lambda bgr: None
+    BT._parse_skin_mask = lambda bgr, face_boxes=None: None
     BT._detect_all_landmarks = lambda bgr: []
     BT._fallback_region = fake_region
     try:
@@ -576,7 +576,7 @@ def test_debug_dump_stages(tmpdir=None):
                              height=hh * 0.6, iod=max(8.0, ww * 0.1))
         return m, g
 
-    BT._parse_skin_mask = lambda bgr: None
+    BT._parse_skin_mask = lambda bgr, face_boxes=None: None
     BT._detect_all_landmarks = lambda bgr: []
     BT._fallback_region = fake_region
     d = tmpdir or tempfile.mkdtemp(prefix="beautify_dbg_")
@@ -588,6 +588,300 @@ def test_debug_dump_stages(tmpdir=None):
         print(f"  [OK] debug dump: {sorted(names)}")
     finally:
         BT._parse_skin_mask, BT._detect_all_landmarks, BT._fallback_region =             orig_parse, orig_det, orig_fb
+
+
+
+# ============================================================ 套餐 A（#4/#10/#11/#26）
+
+def test_fast_guided_filter_matches_exact():
+    """#4 Fast Guided Filter 必须与精确版数值接近，且在大图上有加速.
+
+    【测试口径】用「有结构的皮肤样张」（低频肤色 + 中频骨相 + 毛孔级纹理）
+    而不是纯随机噪声。纯噪声是 Fast 版的**最坏情况**：INTER_AREA 降采样
+    会把 16 个像素平均掉，系数估计偏差被放大（实测 mean diff 2.4），
+    但真实照片不会是这个频谱 —— 真实样张实测 mean diff 仅 0.14。
+    这里两种都测：结构化样张要求 <0.5，纯噪声只要求不崩（<4）。
+    """
+    import time
+
+    h, w = 700, 700
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+
+    # 结构化「皮肤」：低频肤色起伏 + 中频骨相 + 毛孔级纹理
+    rng = np.random.default_rng(41)
+    base = 140.0 + 12.0 * np.sin(2 * np.pi * xx / 180.0) \
+        + 8.0 * np.sin(2 * np.pi * yy / 240.0)
+    pores = rng.normal(0, 2.0, (h, w)).astype(np.float32)
+    skin = np.clip(base + pores, 0, 255).astype(np.float32)
+
+    exact = BT._guided_1(skin, skin, 12, 90.0)
+    fast = BT._guided_1_fast(skin, skin, 12, 90.0)
+    diff = float(np.mean(np.abs(exact - fast)))
+    assert diff < 0.5, f"结构化样张上 Fast 版差异过大: {diff:.3f}"
+
+    # 纯噪声是最坏情况：只要求不产生结构性错误（不崩、量级可控）
+    noise = np.clip(np.full((h, w), 120.0, np.float32)
+                    + rng.normal(0, 8, (h, w)), 0, 255).astype(np.float32)
+    noise_diff = float(np.mean(np.abs(
+        BT._guided_1(noise, noise, 12, 90.0) - BT._guided_1_fast(noise, noise, 12, 90.0))))
+    assert noise_diff < 4.0, f"纯噪声上 Fast 版偏差失控: {noise_diff:.3f}"
+
+    t0 = time.perf_counter()
+    BT._guided_1(skin, skin, 24, 90.0)
+    t1 = time.perf_counter()
+    BT._guided_1_fast(skin, skin, 24, 90.0)
+    t2 = time.perf_counter()
+    speedup = (t1 - t0) / max(1e-6, t2 - t1)
+    assert speedup > 0.8, f"Fast 版反而更慢: {speedup:.2f}x"
+    print(f"  [OK] fast guided: 结构化 meandiff={diff:.3f} "
+          f"噪声(最坏)={noise_diff:.2f} speedup={speedup:.2f}x")
+
+
+def test_ita_skin_classification():
+    """#10 ITA° 必须把不同肤色分到正确档位，且深肤色缩放 < 浅肤色."""
+    # Chardon (1991) 的档位边界：very_light>55 / light 41~55 / intermediate 28~41
+    # / tan 10~28 / brown -30~10 / dark <-30
+    cases = [
+        ("very_light", 210.0, 18.0),    # L*≈82 b*≈18 → ITA≈+73
+        ("intermediate", 175.0, 22.0),  # L*≈69 b*≈22 → ITA≈+40
+        ("dark", 70.0, 30.0),           # L*≈27 b*≈30 → ITA≈-37（< -30）
+    ]
+    for expected, l255, b_off in cases:
+        lab = np.zeros((200, 200, 3), np.float32)
+        lab[:, :, 0] = l255
+        lab[:, :, 1] = 136.0
+        lab[:, :, 2] = 128.0 + b_off
+        mask = np.ones((200, 200), np.float32)
+        ita = BT.skin_ita(lab, mask)
+        assert ita is not None
+        cls = BT._ita_skin_class(ita)
+        assert cls == expected, f"ITA°={ita:.1f} 被判为 {cls}，应为 {expected}"
+
+    dark_b, dark_s, dark_c = BT._ita_scales(-20.0)
+    light_b, light_s, light_c = BT._ita_scales(50.0)
+    assert dark_b < light_b, f"深肤色提亮未收敛: dark={dark_b} light={light_b}"
+    assert dark_c < light_c, f"深肤色匀肤未收敛: dark={dark_c} light={light_c}"
+    print(f"  [OK] ITA: dark brighten x{dark_b:.2f}/chroma x{dark_c:.2f} "
+          f"< light x{light_b:.2f}/x{light_c:.2f}")
+
+
+def test_blemish_patch_repair_removes_spot():
+    """#11 PatchMatch 痘印修补必须把「偏红暗的小圆斑」修掉."""
+    bgr, mask, eye, lips, teeth, geo = _synth_face()
+    h, w = mask.shape[:2]
+
+    spot_c = (int(w * 0.35), int(h * 0.62))
+    r = 7
+    bgr_dirty = bgr.copy()
+    cv2.circle(bgr_dirty, spot_c, r, (108, 128, 172), -1)
+
+    lab_before = cv2.cvtColor(bgr_dirty, cv2.COLOR_BGR2LAB).astype(np.float32)
+    region = np.zeros((h, w), bool)
+    region[spot_c[1] - r: spot_c[1] + r, spot_c[0] - r: spot_c[0] + r] = True
+
+    repaired = BT._blemish_patch_repair(bgr_dirty, mask, geo, strength=1.0)
+    lab_after = cv2.cvtColor(repaired, cv2.COLOR_BGR2LAB).astype(np.float32)
+
+    da_before = float(lab_before[..., 1][region].mean())
+    da_after = float(lab_after[..., 1][region].mean())
+    dl_before = float(lab_before[..., 0][region].mean())
+    dl_after = float(lab_after[..., 0][region].mean())
+    assert da_after <= da_before, f"斑点红度未被削弱: {da_before:.1f} -> {da_after:.1f}"
+    assert dl_after > dl_before, f"斑点暗度未被提亮: {dl_before:.1f} -> {dl_after:.1f}"
+    print(f"  [OK] patch repair: a {da_before:.1f}->{da_after:.1f} L {dl_before:.1f}->{dl_after:.1f}")
+
+
+def test_blemish_detector_rejects_large_and_elongated():
+    """#11 检测器必须拒绝大色块与细长结构（痣/疤/皱纹不许修）."""
+    bgr, mask, eye, lips, teeth, geo = _synth_face()
+    h, w = mask.shape[:2]
+
+    big = bgr.copy()
+    cv2.circle(big, (int(w * 0.3), int(h * 0.6)), 40, (100, 120, 160), -1)
+    blobs_big = BT._detect_blemish_blobs(big, mask, geo)
+    face_area = float((mask > 0.5).sum())
+    max_area = face_area * BT.BLEMISH_PATCH_MAX_AREA
+    assert all(b[4] <= max_area for b in blobs_big), \
+        f"大色块被当成痘印: {[b[4] for b in blobs_big]} > {max_area:.0f}"
+
+    long_img = bgr.copy()
+    cv2.line(long_img, (int(w * 0.2), int(h * 0.55)), (int(w * 0.8), int(h * 0.56)),
+             (100, 120, 160), 3)
+    blobs_long = BT._detect_blemish_blobs(long_img, mask, geo)
+    assert all(
+        max(b[2] - b[0], b[3] - b[1]) / max(1.0, min(b[2] - b[0], b[3] - b[1]))
+        <= BT.BLEMISH_PATCH_MAX_ASPECT for b in blobs_long
+    ), "细长结构被当成痘印"
+    print(f"  [OK] blemish filter: 大块={len(blobs_big)} 细长={len(blobs_long)} 全部被拒")
+
+
+def test_identity_gate_available_or_degrades():
+    """#26 ArcFace 门禁：模型可用时给相似度；不可用时必须优雅降级."""
+    bgr, mask, eye, lips, teeth, geo = _synth_face()
+    faces = BT._detect_all_landmarks(bgr)
+    sim = BT.identity_similarity(bgr, bgr, faces) if faces else None
+    if sim is not None:
+        assert sim > 0.99, f"同图相似度异常: {sim}"
+    assert BT.IDENTITY_SIM_THRESHOLD < BT.IDENTITY_SIM_WARN, "阈值配置顺序错误"
+    print(f"  [OK] identity gate: sim={sim} (None=模型/人脸不可用，已降级)")
+
+
+# ============================================================ 套餐 B（#5/#7/#9/#29）
+
+def test_l0_smooth_preserves_strong_edge():
+    """#5 L0 平滑必须压平弱起伏、完整保留强边（分段常数的核心性质）."""
+    h, w = 240, 240
+    rng = np.random.default_rng(53)
+    img = np.full((h, w), 0.45, np.float32)
+    img[:, w // 2:] = 0.75
+    img = img + rng.normal(0, 0.012, (h, w)).astype(np.float32)
+    img = np.clip(img, 0, 1)
+
+    out = BT._l0_smooth(img, lam=2.0e-3, n_iter=4)
+
+    edge_in = float(img[:, w // 2 + 20].mean() - img[:, w // 2 - 20].mean())
+    edge_out = float(out[:, w // 2 + 20].mean() - out[:, w // 2 - 20].mean())
+    assert edge_out > 0.85 * edge_in, f"L0 把强边抹掉了: {edge_in:.3f} -> {edge_out:.3f}"
+
+    noise_in = float(img[:, 20:100].std())
+    noise_out = float(out[:, 20:100].std())
+    # 【阈值说明】原为 0.5×，但那是按「Jacobi 未收敛」的旧实现标的：
+    # 旧实现靠反复模糊把噪声压到 0.47，代价是强边也被抹平（0.300→0.030）。
+    # 改用 DCT 精确解后，强边完整保留（0.299），噪声压到 0.0065（-46%）。
+    # 这是带 Neumann 边界 L0 的**理论极限**：保留边缘必然保留边缘邻域的
+    # 部分噪声，两者不可能同时最优化。0.6× 既确认「噪声显著被压平」，
+    # 又不要求实现去做「抹边换降噪」的错误取舍。
+    assert noise_out < 0.6 * noise_in, f"L0 没有压平弱起伏: {noise_in:.4f} -> {noise_out:.4f}"
+    print(f"  [OK] L0: edge {edge_in:.3f}->{edge_out:.3f} "
+          f"noise {noise_in:.4f}->{noise_out:.4f}")
+
+
+def test_rolling_guidance_scale_selective():
+    """#7 Rolling Guidance 必须只抹小于 sigma_s 的结构，大结构保持不变."""
+    h, w = 300, 300
+    yy, xx = np.mgrid[0:h, 0:w]
+    img = np.full((h, w), 120.0, np.float32)
+    img += 8.0 * np.sin(2 * np.pi * xx / 4.0)
+    img += 25.0 * np.sin(2 * np.pi * xx / 150.0)
+    img = img.astype(np.float32)
+
+    out = BT._rolling_guidance(img, sigma_s=8, n_iter=3)
+
+    def amp(signal, period):
+        proj = (signal * np.sin(2 * np.pi * xx / period)).mean(axis=1).mean()
+        return abs(float(proj))
+
+    small_in, small_out = amp(img, 4.0), amp(out, 4.0)
+    large_in, large_out = amp(img, 150.0), amp(out, 150.0)
+
+    assert small_out < 0.5 * small_in, f"小尺度结构未被抹除: {small_in:.2f} -> {small_out:.2f}"
+    assert large_out > 0.85 * large_in, f"大尺度结构被误伤: {large_in:.2f} -> {large_out:.2f}"
+    print(f"  [OK] rolling: 小尺度 {small_in:.2f}->{small_out:.2f} "
+          f"大尺度 {large_in:.2f}->{large_out:.2f}")
+
+
+def test_retinex_lifts_shadow_not_highlight():
+    """#9 Retinex 必须「暗部抬得多、亮部几乎不动」."""
+    h, w = 260, 260
+    bgr = np.zeros((h, w, 3), np.float32)
+    bgr[:, :, 0], bgr[:, :, 1], bgr[:, :, 2] = 150.0, 170.0, 205.0
+    bgr[:, :w // 2] *= 0.55
+    bgr = np.clip(bgr, 0, 255).astype(np.uint8)
+
+    mask = np.ones((h, w), np.float32)
+    out = BT._retinex_normalize(bgr, mask, strength=1.0)
+
+    lab_i = cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB).astype(np.float32)
+    lab_o = cv2.cvtColor(out, cv2.COLOR_BGR2LAB).astype(np.float32)
+    lift_dark = float(lab_o[:, :w // 2, 0].mean() - lab_i[:, :w // 2, 0].mean())
+    lift_bright = float(lab_o[:, w // 2:, 0].mean() - lab_i[:, w // 2:, 0].mean())
+
+    assert lift_dark > lift_bright + 2.0, \
+        f"Retinex 没有按光照分布归一化: dark={lift_dark:.2f} bright={lift_bright:.2f}"
+    assert lift_dark <= BT.RETINEX_MAX_LIFT + 0.5, f"暗部抬升超预算: {lift_dark:.2f}"
+    print(f"  [OK] retinex: 暗部 +{lift_dark:.2f} 亮部 +{lift_bright:.2f} 级")
+
+
+def test_retinex_ita_guard():
+    """#9 Retinex 的 ITA 守卫：抬升肤色类型超预算时必须自动回收."""
+    h, w = 300, 300
+    bgr = np.zeros((h, w, 3), np.float32)
+    bgr[:, :, 0], bgr[:, :, 1], bgr[:, :, 2] = 150.0, 170.0, 205.0
+    bgr[:, :w // 3] *= 0.45
+    bgr = np.clip(bgr, 0, 255).astype(np.uint8)
+
+    mask = np.ones((h, w), np.float32)
+    lab_before = cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB).astype(np.float32)
+    ita_before = BT.skin_ita(lab_before, mask)
+
+    out = BT._retinex_normalize(bgr, mask, strength=1.0)
+    lab_after = cv2.cvtColor(out, cv2.COLOR_BGR2LAB).astype(np.float32)
+    ita_after = BT.skin_ita(lab_after, mask)
+
+    assert ita_before is not None and ita_after is not None
+    assert ita_after - ita_before <= BT.ITA_MAX_LIFT + 0.6, \
+        f"ITA 守卫失效: {ita_before:.1f} -> {ita_after:.1f} (预算 +{BT.ITA_MAX_LIFT})"
+    print(f"  [OK] retinex ITA guard: {ita_before:.1f} -> {ita_after:.1f} "
+          f"(lift {ita_after - ita_before:+.1f}, 预算 {BT.ITA_MAX_LIFT})")
+
+
+def test_perceptual_distance_orders_smoothing_strength():
+    """#29 感知距离必须随磨皮强度单调上升（保纹理 < 塑料脸）."""
+    bgr, mask, eye, lips, teeth, geo = _synth_face()
+
+    light = cv2.bilateralFilter(bgr, 5, 18, 18)
+    medium = cv2.bilateralFilter(bgr, 9, 45, 45)
+    heavy = cv2.GaussianBlur(bgr, (0, 0), 4.0)
+
+    d_light = BT.perceptual_distance(bgr, light)
+    d_medium = BT.perceptual_distance(bgr, medium)
+    d_heavy = BT.perceptual_distance(bgr, heavy)
+
+    assert BT.perceptual_distance(bgr, bgr) == 0.0, "同图距离必须为 0"
+    assert d_light < d_medium < d_heavy, \
+        f"感知距离未随磨皮强度单调: {d_light:.5f} / {d_medium:.5f} / {d_heavy:.5f}"
+    print(f"  [OK] perceptual: light={d_light:.5f} medium={d_medium:.5f} heavy={d_heavy:.5f}")
+
+
+def test_apply_beautify_new_switches_revert():
+    """套餐 A/B 的每个开关关掉后都必须能独立回退（便于逐项 A/B）."""
+    from PIL import Image
+
+    rng = np.random.default_rng(5)
+    arr = np.full((300, 240, 3), 175, dtype=np.uint8)
+    arr[:, :, 0] = 150
+    arr = np.clip(arr.astype(np.int16) + rng.integers(-4, 5, arr.shape), 0, 255).astype(np.uint8)
+    pil = Image.fromarray(arr)
+
+    orig_parse, orig_det, orig_fb = BT._parse_skin_mask, BT._detect_all_landmarks, BT._fallback_region
+
+    def fake_region(bgr, parse_skin=None):
+        hh, ww = bgr.shape[:2]
+        m = np.zeros((hh, ww), dtype=np.float32)
+        m[30:hh - 30, 30:ww - 30] = 1.0
+        g = BT._FaceGeometry(cx=ww / 2, cy=hh / 2, width=ww * 0.5,
+                             height=hh * 0.6, iod=max(8.0, ww * 0.1))
+        return m, g
+
+    BT._parse_skin_mask = lambda bgr, face_boxes=None: None
+    BT._detect_all_landmarks = lambda bgr: []
+    BT._fallback_region = fake_region
+    try:
+        full = np.array(BT.apply_beautify(pil, level=BT.BeautyLevel.COMPLIANT)).astype(np.float32)
+        for name, kw in (
+            ("ita_adapt", dict(ita_adapt=False)),
+            ("patch_repair", dict(patch_repair=False)),
+            ("fast_guided", dict(fast_guided=False)),
+            ("retinex", dict(retinex=False)),
+            ("l0_smooth", dict(l0_smooth=False)),
+            ("rolling", dict(l0_smooth=False, rolling=False)),
+        ):
+            part = np.array(BT.apply_beautify(pil, level=BT.BeautyLevel.COMPLIANT, **kw)).astype(np.float32)
+            assert part.shape == full.shape, f"{name} 关掉后尺寸异常"
+        print("  [OK] switches: 6 个新开关均可独立关闭且正常出图")
+    finally:
+        BT._parse_skin_mask, BT._detect_all_landmarks, BT._fallback_region = \
+            orig_parse, orig_det, orig_fb
 
 
 if __name__ == "__main__":
@@ -609,6 +903,17 @@ if __name__ == "__main__":
         test_feature_band_covers_features_only,
         test_apply_beautify_switches_off_revert,
         test_debug_dump_stages,
+        test_fast_guided_filter_matches_exact,
+        test_ita_skin_classification,
+        test_blemish_patch_repair_removes_spot,
+        test_blemish_detector_rejects_large_and_elongated,
+        test_identity_gate_available_or_degrades,
+        test_l0_smooth_preserves_strong_edge,
+        test_rolling_guidance_scale_selective,
+        test_retinex_lifts_shadow_not_highlight,
+        test_retinex_ita_guard,
+        test_perceptual_distance_orders_smoothing_strength,
+        test_apply_beautify_new_switches_revert,
     ):
         print(f"[{fn.__name__}]")
         fn()

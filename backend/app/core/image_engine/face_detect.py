@@ -256,11 +256,63 @@ def align_face(
             f"(crop_h={min_crop_h:.0f}), widened to include head & shoulders"
         )
 
+    # ---- 【关键修复】裁剪框不得超出原图，否则会横向拉伸 ----
+    # 【问题现象】用户实测：295×413 的原图（脸已顶满画面）出图后人物明显变宽、
+    # 肩膀被拉长，脸型失真。对比图里右侧人物比左侧宽约 30%。
+    #
+    # 【根因】上面的头肩保护会把 crop_h 撑到 face.height*3。本例原图 295×413、
+    # 检测到的脸 179×179 → min_crop_h=537、crop_w=384，**都超过原图 413/295**。
+    # 旧代码对越界部分做 np.pad(mode="edge")：把最外一列/行像素整条复制出去，
+    # 相当于凭空造出一圈"被拉伸的边缘"。裁剪窗口比原图大 30%，再缩回目标尺寸，
+    # 净效果就是把人物横向拉宽 30% —— 这不是美颜问题，是几何变形。
+    #
+    # 【修法】越界时把裁剪框**收缩到原图能提供的最大范围**（保持目标长宽比），
+    # 然后只在原图内部裁剪。宁可构图略微偏离理想眼位，也绝不拉伸像素。
+    # 只有「原图本身就比裁剪框小很多」这种极端情况才退化为整图等比缩放。
+    img_w, img_h = image.size
+    need_w = crop_right - crop_left
+    need_h = crop_bottom - crop_top
+    if need_w > img_w or need_h > img_h:
+        # 按目标比例求出原图能容纳的最大裁剪框
+        fit_scale = min(img_w / float(need_w), img_h / float(need_h))
+        if fit_scale < 1.0:
+            new_w = max(32.0, need_w * fit_scale)
+            new_h = max(32.0, need_h * fit_scale)
+            logger.info(
+                f"Align clamped: crop {need_w}x{need_h} exceeds image {img_w}x{img_h}, "
+                f"shrink to {new_w:.0f}x{new_h:.0f} (avoids edge-pad stretching)"
+            )
+            # 保持人物中心不变，只缩窗口
+            cx = (crop_left + crop_right) / 2.0
+            cy = (crop_top + crop_bottom) / 2.0
+            crop_w, crop_h = new_w, new_h
+            crop_left = int(round(cx - new_w / 2.0))
+            crop_top = int(round(cy - new_h / 2.0))
+            crop_right = crop_left + int(round(new_w))
+            crop_bottom = crop_top + int(round(new_h))
+            # 平移回图内（不缩放，纯平移，零变形）
+            if crop_left < 0:
+                crop_right -= crop_left
+                crop_left = 0
+            if crop_top < 0:
+                crop_bottom -= crop_top
+                crop_top = 0
+            if crop_right > img_w:
+                crop_left -= (crop_right - img_w)
+                crop_right = img_w
+            if crop_bottom > img_h:
+                crop_top -= (crop_bottom - img_h)
+                crop_bottom = img_h
+            crop_left = max(0, crop_left)
+            crop_top = max(0, crop_top)
+
     if crop_right - crop_left < 32 or crop_bottom - crop_top < 32:
         logger.warning("Face alignment produced invalid crop, using full image resize.")
         return image.resize((target_width, target_height), Image.LANCZOS)
 
     # --- 越界部分用边缘像素外扩（避免黑边；换底会覆盖这些区域）---
+    # 注意：上面的 clamp 已保证正常情况下不会越界；这里只兜「几乎没越界」的
+    # 亚像素情形（<2px），此时边缘外扩不会造成可感知的拉伸。
     pad_l = max(0, -crop_left)
     pad_t = max(0, -crop_top)
     pad_r = max(0, crop_right - image.width)

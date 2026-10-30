@@ -357,6 +357,7 @@ export interface ProcessParams {
   max_kb?: number
   bg_color?: string
   output_format?: string
+  /** 0=原图直出, 1=自然微调(证件照合规红线), 4=艺术档, 5=影楼精修(强磨皮/匀肤/塑形) */
   beautify_level?: number
   beautify_smooth?: boolean
   beautify_brighten?: boolean
@@ -490,9 +491,24 @@ export function getOutputFormats(): Promise<{ formats: OutputFormat[] }> {
 export interface BgColor {
   name: string
   rgb: number[]
+  /** 色调分组（白/蓝/红/灰/其他），前端按它分组展示 */
+  group?: string
+  /** 中文名（后端权威文案，前端只做兜底） */
+  label?: string
+  /** 标准 HEX 色号，用户要拿它对照报考公告 */
+  hex?: string
+  /** 适用场景说明 */
+  usage?: string
 }
 
-export function getBgColors(): Promise<{ colors: BgColor[] }> {
+export interface BgColorsResult {
+  colors: BgColor[]
+  /** 有明确使用场景的标准色号（默认展示这批） */
+  standard?: BgColor[]
+  groups?: string[]
+}
+
+export function getBgColors(): Promise<BgColorsResult> {
   return get('/process/bg-colors')
 }
 

@@ -54,11 +54,23 @@
             </el-col>
           </el-row>
           <el-form-item label="背景色" prop="allowed_bg_colors">
+            <!--
+              这里勾的是「色调分组」，不是具体色号。
+              模板的语义是「这张照片要求什么底」（蓝底/红底/白底），而用户在
+              前台要按报考公告精确到 #438EDB 还是 #0066CC —— 所以后台只管
+              勾组，前台在组内展开全部标准色号（见 web-pc/stores/photo.ts）。
+              勾「蓝色」= 允许该模板使用全部 5 档蓝底。
+            -->
             <el-checkbox-group v-model="form.allowed_bg_colors">
-              <el-checkbox label="white">白色</el-checkbox>
-              <el-checkbox label="blue">蓝色</el-checkbox>
-              <el-checkbox label="red">红色</el-checkbox>
+              <el-checkbox label="white">白色（#FFFFFF）</el-checkbox>
+              <el-checkbox label="blue">蓝色（5 档：通用/考公/变体/青蓝/学历浅蓝）</el-checkbox>
+              <el-checkbox label="red">红色（5 档：正红/深红/正深红/变体/暗红）</el-checkbox>
+              <el-checkbox label="gray">灰色（3 档：浅灰/中浅灰/灰）</el-checkbox>
+              <el-checkbox label="keep">保留原背景</el-checkbox>
             </el-checkbox-group>
+            <div class="form-tip">
+              勾选色组即可；前台会展开该组内全部标准色号供用户按公告挑 HEX。
+            </div>
           </el-form-item>
           <el-form-item label="输出格式" prop="output_format">
             <el-select v-model="form.output_format" style="width: 200px">
