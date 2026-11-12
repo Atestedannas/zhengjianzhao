@@ -68,6 +68,13 @@ jobs:
             "$SSH_USER@$SSH_HOST" bash -s <<'REMOTE'
           set -euo pipefail
           cd /opt/zhengjianzhao/photo-zhijianzhao
+          # —— 部署前自愈：工作区可能残留经 1Panel 上传的 root 属主文件或 immutable 属性，
+          #    会让 git pull/reset --hard 报 "unable to unlink ... Permission denied"
+          #    （2026-11-12 实际踩坑）。先统一属主/属性，幂等，正常时无副作用。
+          echo "==> 部署用户：$(id)"
+          chattr -R -i . 2>/dev/null || true
+          chown -R "$(id -u):$(id -g)" . 2>/dev/null || true
+          chmod -R u+rwX . 2>/dev/null || true
           nohup bash deploy/git-pull-deploy.sh > /tmp/deploy.log 2>&1 < /dev/null &
           PID=$!
           echo "==> 部署进程 PID=$PID，开始跟随日志"

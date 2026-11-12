@@ -20,6 +20,12 @@ BRANCH="${BRANCH:-main}"
 
 cd "$APP_DIR" || { echo "目录不存在：$APP_DIR"; exit 1; }
 
+# 自愈：工作区可能残留经 1Panel 上传的 root 属主文件或 immutable 属性，
+# 会让 pull/reset 报 "unable to unlink ... Permission denied"（2026-11-12 踩坑）。
+chattr -R -i . 2>/dev/null || true
+chown -R "$(id -u):$(id -g)" . 2>/dev/null || true
+chmod -R u+rwX . 2>/dev/null || true
+
 OLD_HEAD="$(git rev-parse HEAD 2>/dev/null || echo none)"
 echo "==> 部署前 HEAD：${OLD_HEAD:0:7}"
 
