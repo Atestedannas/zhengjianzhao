@@ -56,8 +56,12 @@ async def process_photo(
     upscale: bool = Form(True),
     # === 输出参数 ===
     dpi: int = Form(300),
-    min_kb: int = Form(0),
-    max_kb: int = Form(100),
+    # None = 调用方没有显式指定文件大小限制，由模板默认值 / 全局兜底（0~100KB）
+    # 决定。若默认值直接写死 0/100，就无法区分「用户没传」和「用户要 100KB」，
+    # 模板模式下用户自定义的大小上限会被模板值无条件覆盖（与 bg_color 的
+    # 历史 bug 同一类问题，见下方模板覆盖段的注释）。
+    min_kb: int = Form(None),
+    max_kb: int = Form(None),
     # 空串 = 调用方没有显式指定背景色，由模板默认值 / 白色兜底决定。
     # 【为什么默认值不能直接写 "white"】以前默认 "white"，代码就无法区分
     # 「用户主动选了白底」和「用户根本没传这个字段」，于是用
@@ -78,9 +82,13 @@ async def process_photo(
     beautify_tone: bool = Form(True),
     beautify_texture: bool = Form(True),
     beautify_feature: bool = Form(True),
+    # ⑮ 局部色斑抑制（P1）：默认开；需要回滚 / A-B 时显式传 false
+    beautify_spot: bool = Form(True),
     retouch_strength: float = Form(1.0),
     # === 证件照 ===
-    id_photo_align: bool = Form(False),
+    # 与 ProcessParams、前端默认值保持一致：不对齐会把脸缩到约 45px，
+    # 关键点检不出 → 美颜静默降级（P0 定位到的核心根因）。
+    id_photo_align: bool = Form(True),
     gender: str = Form(None),
     # === 依赖 ===
     db: AsyncSession = Depends(get_db),
@@ -94,7 +102,7 @@ async def process_photo(
     - 格式转换: 支持 JPEG/PNG/PDF/WEBP/BMP/TIFF
     - 美颜: beautify_level 0=OFF 1=自然微调(COMPLIANT, 默认) 2/3=内部测试档
       （1/2/3 均会被证件照红线钳制：磨皮≤12%、保留≥90%原生纹理、不改骨相）；
-      retouch_strength 还原度滑杆 0~1（默认 1，前端默认 0.7 轻修）
+      retouch_strength 还原度滑杆 0~1（默认 1=完整档位，0=完全还原原图）
     - 证件照: id_photo_align 自动人脸对齐, gender 男女切换
     - 背景色: 支持 16 种颜色
 
@@ -128,8 +136,12 @@ async def process_photo(
         width = tmpl.width_px
         height = tmpl.height_px
         dpi = tmpl.dpi
-        min_kb = tmpl.min_kb
-        max_kb = tmpl.max_kb
+        # 文件大小限制：用户显式指定（前端「文件大小上限」输入框）时优先，
+        # 没传才回落到模板默认值 —— 模板是「建议值」不是「锁死值」。
+        if min_kb is None:
+            min_kb = tmpl.min_kb
+        if max_kb is None:
+            max_kb = tmpl.max_kb
         colors = tmpl.allowed_bg_colors
         if isinstance(colors, str):
             colors = json.loads(colors)
@@ -167,6 +179,12 @@ async def process_photo(
     if width == 0 and height == 0:
         # 未指定尺寸不做调整
         pass
+
+    # 未指定大小时的兜底：min_kb=0 表示不限最小值，max_kb=100 是全局默认上限
+    if min_kb is None:
+        min_kb = 0
+    if max_kb is None:
+        max_kb = 100
 
     # === 参数范围校验（非法参数返回明确业务错误，而非裸 500） ===
     if not (0 <= beautify_level <= 5):
@@ -235,6 +253,7 @@ async def process_photo(
         beautify_tone=beautify_tone,
         beautify_texture=beautify_texture,
         beautify_feature=beautify_feature,
+        beautify_spot=beautify_spot,
         retouch_strength=retouch_strength,
         id_photo_align=id_photo_align,
         gender=gender if gender and gender != "None" else None,
@@ -372,6 +391,8 @@ async def get_process_status(
             "output_format": output_format,
             "mime_type": mime_type,
             "warnings": meta.get("warnings") or [],
+            # 美颜生效报告：前端用它显示「美颜已生效 / 已降级 / 未生效」
+            "beautify_report": meta.get("beautify_report") or {},
             "faces_detected": meta.get("faces_detected") or 0,
             "processing_time_ms": record.processing_time_ms or 0,
             "remaining_free_count": remaining,

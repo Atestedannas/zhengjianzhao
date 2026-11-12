@@ -138,6 +138,10 @@ async def run_process_record(record_id: int) -> dict:
                 "output_format": result.output_format,
                 "mime_type": result.mime_type,
                 "file_size_kb": round(result.result_size_kb, 1),
+                # 美颜生效报告（P0）：applied / mode / iod_px / mask_coverage /
+                # skin_diff / identity_sim。前端据此显示「已生效 / 已降级 / 未生效」，
+                # 不再出现「拿到没美颜的图却毫不知情」。
+                "beautify_report": dict(getattr(result, "beautify_report", {}) or {}),
                 # 对比基线的实际落盘路径（前端通过 /baseline 接口取图）
                 "baseline_path": baseline_path,
             }

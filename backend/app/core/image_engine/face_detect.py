@@ -7,6 +7,8 @@ import numpy as np
 from PIL import Image
 from loguru import logger
 
+from app.core.image_engine.cascade import frontal_face_cascade
+
 
 @dataclass
 class FaceInfo:
@@ -43,36 +45,31 @@ def detect_faces(
     gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
 
     # minSize 随图像尺寸动态计算：小图/小脸不漏检，大图保持合理阈值避免误检
-    # （与 beautify.py 的 _face_region_mask 采用同一动态阈值方案）
+    # （与 beautify 包的皮肤区域蒙版采用同一动态阈值方案）
     h, w = gray.shape[:2]
     min_size = max(30, min(w, h) // 15)
 
     faces = []
 
+    # 【中文路径修复】不要直接拼 cv2.data.haarcascades：在含非 ASCII 字符的
+    # 安装路径下 CascadeClassifier 会静默变成 empty()，detectMultiScale 抛异常，
+    # 最终表现为「0 张脸 → 对齐被跳过 → 美颜在小图上降级」。统一走 cascade.py
+    # 的加载器（失败时复制到 ASCII 临时目录），且加载失败会明确抛错而不是静默。
+    cascade = frontal_face_cascade()
     if use_dnn:
-        # 尝试使用 OpenCV DNN 人脸检测（更准确）
-        try:
-            # 使用 OpenCV 内置的 DNN 模型
-            model_file = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-            # DNN 路径因 OpenCV 版本而异，使用 Haar 作为回退
-            cascade = cv2.CascadeClassifier(model_file)
-            detected = cascade.detectMultiScale(
-                gray, scaleFactor=1.05, minNeighbors=8, minSize=(min_size, min_size)
-            )
-        except Exception as e:
-            logger.warning(f"DNN face detection failed: {e}, falling back to Haar.")
-            cascade = cv2.CascadeClassifier(
-                cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-            )
-            detected = cascade.detectMultiScale(
-                gray, scaleFactor=1.1, minNeighbors=5, minSize=(min_size, min_size)
-            )
-    else:
-        cascade = cv2.CascadeClassifier(
-            cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+        # 保留 DNN 开关的旧参数语义（更严格的 minNeighbors），模型依旧是 Haar；
+        # 这里不再重复加载，避免两处路径不一致导致「开了 DNN 反而检不到脸」。
+        detected = cascade.detectMultiScale(
+            gray, scaleFactor=1.05, minNeighbors=8, minSize=(min_size, min_size)
         )
+    else:
         detected = cascade.detectMultiScale(
             gray, scaleFactor=1.1, minNeighbors=5, minSize=(min_size, min_size)
+        )
+
+    if len(detected) == 0:
+        logger.warning(
+            f"No face detected by Haar cascade (image {w}x{h}, minSize={min_size})"
         )
 
     for x, y, w, h in detected:
@@ -145,14 +142,29 @@ ID_PHOTO_STANDARDS = {
     "小二寸": {"px": (413, 531), "mm": "35×45"},
 }
 
-# 构图红线（PRD 四）：越界即判定为不合规证件照
-COMPOSE_TOP_MARGIN = 0.08        # 头顶留白占高度：5%~10%
+# 构图红线：越界即判定为不合规证件照。
+#
+# 【口径统一（2026-11 眼位构图专项）】所有纵向比例一律从照片【上边沿】起算。
+# 依据：《出入境证件相片照相指引》（国家移民局 / ICAO DOC 9303）——
+#   成人「眼睛距相片上边缘 0.3H ~ 0.5H」、儿童上限 0.6H；
+#   居民身份证照片「眼睛距相片下边沿 ≥207px（441px 高）」≈ 距顶部 ≤0.53H。
+# 旧口径把眼位写成「距顶部 50%~60%」并配 COMPOSE_EYE_LINE=0.56，
+# 等价于要求脸高占画面 56%，正是 2026-10 用户反馈「肩膀被裁没、变大头贴」
+# 的成因；也与上述国家标准的 0.5H 上限冲突。头肩保护修复后实际眼位约 36%，
+# 落在合规区间内，但常量 / 文档 / 日志 / 测试断言一直没同步，形成「验收永远
+# 失败、日志自相矛盾」的假红线。此处把口径一次性对齐到实现与标准。
+COMPOSE_TOP_MARGIN = 0.08        # 头顶发迹距上边沿：5%~10%
 COMPOSE_TOP_MARGIN_MIN = 0.05
 COMPOSE_TOP_MARGIN_MAX = 0.10
-COMPOSE_EYE_LINE = 0.56          # 眼睛位于高度：50%~60%
-COMPOSE_EYE_LINE_MIN = 0.50
-COMPOSE_EYE_LINE_MAX = 0.60
-COMPOSE_FACE_WIDTH = 0.65        # 脸宽占照片宽度：60%~70%
+# 0.3633 = top_margin 0.08 + (eye_y-head_top)/(3×脸高) = 0.08 + 0.85/3。
+# 与下方「头肩保护 min_crop_h = 3×脸高」是同一个几何解，双锚点不再和保护
+# 逻辑互相打架（实测修正前后所有真实样张出图像素级 maxdiff=0）。
+COMPOSE_EYE_LINE = 0.3633        # 眼睛距上边沿：0.30H ~ 0.50H（成人）
+COMPOSE_EYE_LINE_MIN = 0.30
+COMPOSE_EYE_LINE_MAX = 0.50
+# 60%~70% 是标准里的「头部宽度（含发）」口径；本模块日志回算用的是 Haar
+# 人脸框宽（眉弓→下巴的方形框），真实样张实测约 0.47，二者不可直接比较。
+COMPOSE_FACE_WIDTH = 0.65        # 头部宽度目标：60%~70%
 COMPOSE_FACE_WIDTH_MIN = 0.60
 COMPOSE_FACE_WIDTH_MAX = 0.70
 
@@ -169,30 +181,32 @@ def align_face(
     eye_line_ratio: float = COMPOSE_EYE_LINE,
     face_width_ratio: float = COMPOSE_FACE_WIDTH,
 ) -> Image.Image:
-    """证件照人脸对齐：按 PRD 四 的构图红线裁剪到标准证件照构图.
+    """证件照人脸对齐：按构图红线裁剪到标准证件照构图.
 
-    构图约束（硬指标）:
-      * 头顶留白占照片总高度 5%~10%（默认 8%）
-      * 眼睛位于照片总高度 50%~60%（默认 56%）
-      * 脸部宽度占照片宽度 60%~70%（默认 65%，温和校正且不破坏眼位）
-      * 人物水平居中
+    构图约束（所有纵向比例均从【上边沿】起算）:
+      * 头顶发迹距上边沿 5%~10%（默认 8%）
+      * 眼睛距上边沿 0.30H~0.50H（默认 0.3633，成人国家标准）
+      * 头部宽度（含发）占照片宽度 60%~70%（默认 65%，温和校正）
+      * 人物水平居中、双肩完整可见
 
     实现:
       Haar 人脸框 ≈ 眉弓→下巴，据此推算:
           眼位   eye_y    ≈ face.y + 0.30 * face.height
           头顶   head_top ≈ face.y - 0.55 * face.height（含发际线以上头发）
-      竖直方向同时锚定「头顶留白」与「眼位」两条红线，解出唯一缩放比；
-      再用脸宽比例做温和修正（权重 0.25），并钳制在眼位允许带内。
-      源图不够大时用**边缘像素外扩**而不是留黑边——换底发生在此步之后，
-      外扩区域会被 AI 抠图判为背景并覆盖，因此不影响出图。
+      竖直方向由「头顶留白 + 眼位」双锚点解出缩放比，再用头部宽度比例做
+      温和修正（权重 0.25）。随后**头肩保护**是最终裁决：裁剪框高度不得
+      小于 3×脸高，否则会把肩膀裁成中间的大头贴。由于
+      0.08 + 0.85/3 = 0.3633，双锚点解与头肩保护天然一致，不会互相覆盖。
+      裁剪框超出原图时收缩到原图内（宁可留白不足，绝不复制边缘像素把人
+      拉宽）；源图不足以留出头顶空白时会打 warning，不再静默出图。
 
     参数:
         image: 输入图片
         target_width / target_height: 目标像素尺寸
         top_margin_ratio: 头顶留白比例（会被钳制到 5%~10%）
         shoulder_ratio: 肩部区域比例（保留参数，用于日志与兼容旧调用）
-        eye_line_ratio: 眼位比例（会被钳制到 50%~60%）
-        face_width_ratio: 脸宽占宽比例（默认 65%）
+        eye_line_ratio: 眼位距上边沿比例（会被钳制到 0.30~0.50）
+        face_width_ratio: 头部宽度目标比例（默认 65%）
 
     返回:
         对齐后的 PIL.Image
@@ -333,16 +347,34 @@ def align_face(
     cropped = src.crop((crop_left, crop_top, crop_right, crop_bottom))
     result = cropped.resize((target_width, target_height), Image.LANCZOS)
 
-    # 回算实际构图，便于验收核对
-    head_top_out = (head_top + pad_t - crop_top) * scale / H
-    eye_out = (eye_y + pad_t - crop_top) * scale / H
-    face_w_out = face.width * scale / W
+    # 回算实际构图，便于验收核对。
+    # 【2026-11 P0 修复】旧代码用双锚点解出的 `scale` 回算，但上面的
+    # 「头肩保护 / 越界 clamp」都会改变裁剪框尺寸，scale 早已失效 ——
+    # 日志因此报出「头顶留白 13%、脸宽 75.5%」这类自相矛盾的数字，
+    # 让验收误以为构图越了红线。构图比例只取决于「源坐标 / 实际裁剪框」，
+    # 与 scale 无关，直接用实际 crop 尺寸计算才是可信口径。
+    crop_w_actual = max(1.0, float(crop_right - crop_left))
+    crop_h_actual = max(1.0, float(crop_bottom - crop_top))
+    head_top_out = (head_top + pad_t - crop_top) / crop_h_actual
+    eye_out = (eye_y + pad_t - crop_top) / crop_h_actual
+    face_w_out = face.width / crop_w_actual
+    # 【眼位构图专项】源图不足时不再静默出一张「头顶被切平」的照片。
+    # 越界 clamp 会为了不拉伸像素而收缩/平移裁剪框，代价可能就是留白归零；
+    # 这里只告警，不改几何（改几何会让全部 A/B 基线失效，需单独重标定）。
+    if head_top_out < COMPOSE_TOP_MARGIN_MIN - 0.005:
+        logger.warning(
+            f"Composition warning: top margin {head_top_out:.1%} < "
+            f"{COMPOSE_TOP_MARGIN_MIN:.0%}; source {image.width}x{image.height} cannot hold "
+            "a compliant crop without stretching. Please use a photo with more headroom."
+        )
     logger.info(
         f"Face aligned: face@{face.x},{face.y} {face.width}x{face.height} "
         f"-> crop ({crop_left},{crop_top})-({crop_right},{crop_bottom}) "
         f"-> {target_width}x{target_height} | "
-        f"头顶留白={head_top_out:.1%}(需5-10%) 眼位={eye_out:.1%}(需50-60%) "
-        f"脸宽占比={face_w_out:.1%}(需60-70%) shoulder={shoulder_ratio}"
+        f"头顶留白={head_top_out:.1%}(需{COMPOSE_TOP_MARGIN_MIN:.0%}-{COMPOSE_TOP_MARGIN_MAX:.0%}) "
+        f"眼位={eye_out:.1%}(距上边沿,需{COMPOSE_EYE_LINE_MIN:.0%}-{COMPOSE_EYE_LINE_MAX:.0%}) "
+        f"Haar框宽占比={face_w_out:.1%}(头部宽度目标{COMPOSE_FACE_WIDTH_MIN:.0%}-{COMPOSE_FACE_WIDTH_MAX:.0%}) "
+        f"shoulder={shoulder_ratio}"
     )
     return result
 
@@ -388,9 +420,10 @@ def get_id_photo_params(gender: Optional[str] = None) -> dict:
         "bg_color": "white",
         "clothing": "深色有领上衣",
         "face_ratio": 0.65,                    # 人脸占照片高度的比例
-        "top_margin": COMPOSE_TOP_MARGIN,      # 头顶留白 8%（红线上限 5%~10%）
-        "eye_line": COMPOSE_EYE_LINE,          # 眼位 56%（红线区间 50%~60%）
-        "face_width": COMPOSE_FACE_WIDTH,      # 脸宽占比 65%（红线区间 60%~70%）
+        "top_margin": COMPOSE_TOP_MARGIN,      # 头顶留白 8%（距上边沿 5%~10%）
+        "eye_line": COMPOSE_EYE_LINE,          # 眼位 36.3%（距上边沿 30%~50%）
+        "eye_line_basis": "from_top",          # 明确口径，避免调用方再次误读
+        "face_width": COMPOSE_FACE_WIDTH,      # 头部宽度 65%（目标 60%~70%）
         "min_dpi": MIN_OUTPUT_DPI,             # 输出 DPI 下限 300
     }
 

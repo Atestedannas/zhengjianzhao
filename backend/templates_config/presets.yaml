@@ -5,7 +5,7 @@ templates:
     dpi: 350
     min_kb: 0
     max_kb: 100
-    allowed_bg_colors: ["blue", "white"]
+    allowed_bg_colors: ["red", "blue", "white"]
     output_format: "JPEG"
     physical_size_mm: "35×49mm"
     remark: "适用教师考编报名（413×579 为二寸，35×49mm@300dpi）"
@@ -28,7 +28,7 @@ templates:
     dpi: 350
     min_kb: 20
     max_kb: 45
-    allowed_bg_colors: ["white", "blue"]
+    allowed_bg_colors: ["red", "white", "blue"]
     output_format: "JPEG"
     physical_size_mm: "25×35mm"
     remark: "公务员/事业编报考"
@@ -40,7 +40,7 @@ templates:
     dpi: 300
     min_kb: 0
     max_kb: 200
-    allowed_bg_colors: ["white", "blue"]
+    allowed_bg_colors: ["red", "white", "blue"]
     output_format: "JPEG"
     physical_size_mm: "25×34mm"
     remark: "部分省份教师资格证/教师招聘报名要求 宽300×高400"

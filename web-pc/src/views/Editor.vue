@@ -79,6 +79,36 @@
           </div>
         </div>
 
+        <!-- 出图状态（P0 可观测性）：美颜是否真的生效 + 后端质量提示。
+             过去「0 张脸 / 模型缺失 / 蒙版过小」都只塞一条 warning，
+             用户拿到「没美颜的图」却毫不知情；现在状态显式可见。 -->
+        <div v-if="photoStore.processResult" class="result-status">
+          <el-alert
+            v-if="beautyStatus"
+            :title="beautyStatus.title"
+            :type="beautyStatus.type"
+            :closable="false"
+            show-icon
+          >
+            <template #default>
+              <span>{{ beautyStatus.detail }}</span>
+            </template>
+          </el-alert>
+          <el-alert
+            v-if="resultWarnings.length"
+            title="出图提示"
+            type="warning"
+            :closable="false"
+            show-icon
+          >
+            <template #default>
+              <ul class="warning-list">
+                <li v-for="(w, i) in resultWarnings" :key="i">{{ w }}</li>
+              </ul>
+            </template>
+          </el-alert>
+        </div>
+
         <!-- 操作按钮 -->
         <div class="preview-actions" v-if="photoStore.originalImage">
           <el-button @click="reUpload">
@@ -145,51 +175,102 @@
           <el-collapse v-model="openPanels" class="settings-collapse">
             <el-collapse-item name="template">
               <template #title>
-                <span class="panel-title"><el-icon><Collection /></el-icon>证件照规格</span>
+                <span class="panel-title"><span class="step-num">1</span>证件照规格</span>
                 <span class="panel-summary">{{ templateSummary }}</span>
               </template>
 
-              <div class="template-list">
+              <div class="template-grid">
                 <div
-                  v-for="tmpl in photoStore.templates"
+                  v-for="tmpl in topTemplates"
                   :key="tmpl.id"
-                  class="template-item"
+                  class="template-card"
                   :class="{ active: photoStore.selectedTemplate === tmpl.id }"
                   @click="photoStore.selectTemplate(tmpl.id)"
                 >
-                  <div class="tmpl-name">{{ tmpl.name }}</div>
-                  <div class="tmpl-size">{{ tmpl.width_px }}×{{ tmpl.height_px }}px</div>
+                  <span class="tmpl-name">{{ tmpl.name }}</span>
+                  <span class="tmpl-size">{{ tmpl.width_px }}×{{ tmpl.height_px }}</span>
+                </div>
+                <div class="template-card more-card" @click="showMoreSpecs = true">
+                  <span class="tmpl-name">更多规格</span>
+                  <span class="tmpl-size">{{ moreTemplates.length ? `${moreTemplates.length} 个可选` : '无更多' }}</span>
+                </div>
+                <div
+                  v-if="!photoStore.selectedTemplate"
+                  class="template-card custom-card active"
+                  @click="photoStore.selectTemplate(null)"
+                >
+                  <span class="tmpl-name">自定义尺寸</span>
+                  <span class="tmpl-size">手动输入</span>
                 </div>
               </div>
 
-              <div class="custom-size-row" v-if="!photoStore.selectedTemplate">
-                <el-input-number
-                  v-model="photoStore.customWidth"
-                  :min="0"
-                  :max="8000"
-                  size="small"
-                  placeholder="宽"
-                  style="width: 45%"
-                />
-                <span class="x-mark">×</span>
-                <el-input-number
-                  v-model="photoStore.customHeight"
-                  :min="0"
-                  :max="8000"
-                  size="small"
-                  placeholder="高"
-                  style="width: 45%"
-                />
+              <el-dialog v-if="showMoreSpecs" title="更多规格" width="500" max-width="800">
+                <div style="max-height: 300px; overflow: auto; padding: 12px;">
+                  <p v-for="tmpl in moreTemplates" :key="tmpl.id">{{ tmpl.name }} ({{ tmpl.width_px }}×{{ tmpl.height_px }})</p>
+                </div>
+                <template #footer>
+                  <el-button @click="showMoreSpecs = false">关闭</el-button>
+                </template>
+              </el-dialog>
+
+              <div class="custom-size-panel" v-if="!photoStore.selectedTemplate">
+                <div class="custom-size-inputs">
+                  <el-input-number
+                    v-model="photoStore.customWidth"
+                    :min="0"
+                    :max="8000"
+                    size="small"
+                    placeholder="宽"
+                  />
+                  <span class="x-mark">×</span>
+                  <el-input-number
+                    v-model="photoStore.customHeight"
+                    :min="0"
+                    :max="8000"
+                    size="small"
+                    placeholder="高"
+                  />
+                  <span class="unit">px</span>
+                </div>
+                <p class="setting-hint">像素单位，留空则保持原图尺寸</p>
               </div>
-              <p class="setting-hint" v-if="!photoStore.selectedTemplate">
-                像素单位，留空则保持原图尺寸
-              </p>
+
+              <!-- 文件大小限制：很多报名网站对证件照体积有硬性要求 -->
+              <div class="file-size-panel">
+                <div class="file-size-row">
+                  <label class="file-size-label">文件大小上限</label>
+                  <el-input-number
+                    v-model="photoStore.maxKb"
+                    :min="0"
+                    :max="10240"
+                    :step="10"
+                    size="small"
+                    style="width: 110px"
+                  />
+                  <span class="unit">KB</span>
+                </div>
+                <div class="file-size-presets">
+                  <el-button
+                    v-for="preset in SIZE_PRESETS_KB"
+                    :key="preset.value"
+                    size="small"
+                    :type="photoStore.maxKb === preset.value ? 'primary' : 'default'"
+                    @click="photoStore.maxKb = preset.value"
+                  >
+                    {{ preset.label }}
+                  </el-button>
+                </div>
+                <p class="setting-hint">
+                  0 = 不额外限制（默认 ≤100KB）。很多报名网站要求 ≤200KB 或 20~100KB，
+                  直接填公告里的上限即可；后端会在不超上限的前提下保持最高画质。
+                </p>
+              </div>
             </el-collapse-item>
 
             <!-- ② 背景颜色 -->
             <el-collapse-item name="bg">
               <template #title>
-                <span class="panel-title"><el-icon><Brush /></el-icon>背景颜色</span>
+                <span class="panel-title"><span class="step-num">2</span>背景颜色</span>
                 <span class="panel-summary">{{ getColorLabel(photoStore.selectedBgColor) }}</span>
               </template>
 
@@ -211,7 +292,6 @@
                     >
                       <div class="color-swatch" :style="swatchStyle(color)"></div>
                       <span class="color-name">{{ getColorLabel(color.name) }}</span>
-                      <span class="color-hex" v-if="color.hex">{{ color.hex }}</span>
                     </div>
                   </div>
                 </div>
@@ -228,7 +308,7 @@
             <!-- ③ 自然微调（含美颜参数与对比说明） -->
             <el-collapse-item name="beautify">
               <template #title>
-                <span class="panel-title"><el-icon><MagicStick /></el-icon>美颜</span>
+                <span class="panel-title"><span class="step-num">3</span>美颜</span>
                 <span class="panel-summary">
                   {{ beautifySummary }}
                 </span>
@@ -241,13 +321,23 @@
                 show-icon
                 class="compliance-alert"
               />
-              <el-switch
-                v-model="beautifyOn"
-                size="large"
-                active-text="开启微调"
-                inactive-text="原图直出"
-                class="beautify-switch"
-              />
+              <!-- 美颜总开关：做成整行大卡，开关够大、状态一眼可见（用户反馈旧版开关太小找不到） -->
+              <div
+                class="beautify-master"
+                :class="{ on: beautifyOn }"
+                @click="beautifyOn = !beautifyOn"
+              >
+                <div class="bm-text">
+                  <span class="bm-title">美颜微调</span>
+                  <span class="bm-desc">{{ beautifyOn ? beautifySummary : '原图直出 · 不做任何修饰' }}</span>
+                </div>
+                <el-switch
+                  v-model="beautifyOn"
+                  size="large"
+                  class="beautify-switch"
+                  @click.stop
+                />
+              </div>
 
               <template v-if="beautifyOn">
                 <!-- 强度滑杆.
@@ -283,8 +373,9 @@
                   </div>
                 </div>
                 <p class="compliance-note slider-note">
-                  当前强度 {{ strengthPercent }}%，推荐 40% 轻修（以真实为主）；
-                  0% = 完全还原原图，磨皮/提亮/匀肤/分区肤色都会按此比例减弱。
+                  当前强度 {{ strengthPercent }}%。默认 100% 为「自然微调」的完整强度，
+                  磨皮/提亮/匀肤仍由后端合规红线硬钳制（不会改变识别特征）；
+                  0% = 完全还原原图，调低可进一步减轻修饰。
                 </p>
 
                 <el-checkbox v-model="photoStore.beautifyOptions.smooth">
@@ -338,7 +429,7 @@
             <!-- ④ 输出设置 -->
             <el-collapse-item name="advanced">
               <template #title>
-                <span class="panel-title"><el-icon><Setting /></el-icon>输出设置</span>
+                <span class="panel-title"><span class="step-num">4</span>输出设置</span>
                 <span class="panel-summary">{{ photoStore.outputFormat }} · {{ photoStore.dpi }}DPI</span>
               </template>
 
@@ -397,9 +488,6 @@ import {
   MagicStick,
   RefreshLeft,
   Download,
-  Collection,
-  Brush,
-  Setting,
 } from '@element-plus/icons-vue'
 import { usePhotoStore, ProcessPollError, ProcessTimeoutError } from '@/stores/photo'
 import { useAuthStore } from '@/stores/auth'
@@ -417,6 +505,7 @@ const fileInputRef = ref<HTMLInputElement>()
 const isDragging = ref(false)
 /** 从首页功能卡片进来时显示的提示 */
 const featureHint = ref('')
+const showMoreSpecs = ref(false)
 
 /**
  * 右侧面板全部平铺展开（accordion 手风琴）.
@@ -427,6 +516,23 @@ const featureHint = ref('')
  * 折叠只是为了「我看完了，收起来省空间」，而不是「藏功能」。
  */
 const openPanels = ref<string[]>(['template', 'bg', 'beautify', 'advanced'])
+
+/**
+ * 仅展示高频规格（使用次数最多的前 4 个），其余通过「更多规格」弹窗进入。
+ * 按使用次数（usage_count）降序排列；后端未返回 usage_count 时退回原顺序。
+ */
+const topTemplates = computed(() => {
+  const sorted = [...photoStore.templates].sort((a, b) => (b.usage_count ?? 0) - (a.usage_count ?? 0))
+  return sorted.slice(0, 4)
+})
+
+/**
+ * 其余规格，供「更多规格」弹窗展示。
+ */
+const moreTemplates = computed(() => {
+  const sorted = [...photoStore.templates].sort((a, b) => (b.usage_count ?? 0) - (a.usage_count ?? 0))
+  return sorted.slice(4)
+})
 
 /**
  * 「自然微调」总开关。
@@ -480,6 +586,50 @@ const strengthPercent = computed({
 })
 
 /**
+ * 出图后的美颜状态（P0）：把「静默降级」变成用户可见的显式提示。
+ * 后端 beautify_report 给出 mode / iod / 蒙版覆盖 / skin_diff / 身份相似度，
+ * 前端只负责呈现，不自己猜「效果好不好」。
+ */
+type AlertType = 'success' | 'warning' | 'info' | 'error'
+
+const beautyStatus = computed<{ type: AlertType; title: string; detail: string } | null>(() => {
+  const r = photoStore.processResult
+  if (!r || !beautifyOn.value) return null
+  const rep = r.beautify_report || {}
+  // 老记录没有报告字段时不臆测，避免把「历史成功出图」误报成失败
+  if (typeof rep.applied !== 'boolean') return null
+  if (!rep.applied) {
+    return {
+      type: 'error',
+      title: '美颜未生效',
+      detail: `本次出图等同原图（${rep.reason || '未知原因'}）。建议换正面、清晰、脸部占比更大的照片后重试。`,
+    }
+  }
+  const iod = Math.round(rep.iod_px || 0)
+  const coverage = ((rep.mask_coverage || 0) * 100).toFixed(1)
+  const sim = rep.identity_sim != null ? `，身份相似度 ${Number(rep.identity_sim).toFixed(3)}` : ''
+  if (rep.mode === 'fallback') {
+    return {
+      type: 'warning',
+      title: '美颜已降级',
+      detail: `未检出人脸关键点，仅使用基础肤色蒙版（覆盖 ${coverage}%），修饰效果有限；建议换正面、清晰的照片${sim}。`,
+    }
+  }
+  return {
+    type: 'success',
+    title: '美颜已生效',
+    detail: `人脸识别正常：瞳距 ${iod}px、皮肤覆盖 ${coverage}%、皮肤区域平均改动 ${rep.skin_diff ?? 0} 级${sim}。`,
+  }
+})
+
+/** 后端 warnings 去掉已在 beautyStatus 里说明的美颜/身份类，避免重复提示 */
+const resultWarnings = computed(() =>
+  (photoStore.processResult?.warnings || []).filter(
+    (w) => !w.startsWith('美颜') && !w.startsWith('身份校验'),
+  ),
+)
+
+/**
  * 美颜面板标题右侧的摘要：一眼看出当前是哪一档。
  * 【为什么要区分档位名】三个档位的观感差别很大（自然微调/艺术/影楼精修），
  * 只显示「已开启 · 强度 70%」会让用户以为换了档位只是强度变了。
@@ -499,8 +649,16 @@ const beautifySummary = computed(() => {
  */
 const STRENGTH_PRESETS = [
   { label: '原图 0%', value: 0 },
-  { label: '轻修 40%', value: 40 },
-  { label: '精修 100%', value: 100 },
+  { label: '轻修 70%', value: 70 },
+  { label: '标准 100%', value: 100 },
+]
+
+/** 文件大小上限预设（KB）：覆盖常见报名网站要求 */
+const SIZE_PRESETS_KB = [
+  { label: '不限', value: 0 },
+  { label: '≤100KB', value: 100 },
+  { label: '≤200KB', value: 200 },
+  { label: '≤500KB', value: 500 },
 ]
 
 /** 面板标题右侧的摘要：不展开也能看到当前选择 */
@@ -844,7 +1002,7 @@ async function handleDownload() {
   margin: 0 auto;
   padding: 0 20px;
   display: grid;
-  grid-template-columns: 1fr 380px;
+  grid-template-columns: 1fr 400px;
   gap: 24px;
   align-items: start;
 }
@@ -994,6 +1152,22 @@ async function handleDownload() {
   text-align: center;
 }
 
+/* 出图状态（美颜生效报告 + 后端质量提示） */
+.result-status {
+  margin-top: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  text-align: left;
+}
+
+.result-status .warning-list {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  font-size: 12px;
+  line-height: 1.7;
+}
+
 /* Preview Actions */
 .preview-actions {
   display: flex;
@@ -1062,6 +1236,21 @@ async function handleDownload() {
   font-size: 15px;
   font-weight: 600;
   color: #1f2d3d;
+}
+
+/* 步骤序号：让「规格 → 背景 → 美颜 → 输出」的处理流程一眼可见 */
+.step-num {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #409eff;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
 }
 
 .panel-summary {
@@ -1257,9 +1446,60 @@ async function handleDownload() {
   line-height: 1.5;
 }
 
+/* ===== 美颜总开关：整行大卡（用户反馈旧开关太小、找不到） ===== */
+.beautify-master {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  margin-bottom: 14px;
+  border: 1px solid #e4e7ed;
+  border-radius: 10px;
+  background: #fafafa;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.beautify-master:hover {
+  border-color: #c6d9f1;
+}
+.beautify-master.on {
+  border-color: #409eff;
+  background: #ecf5ff;
+}
+.bm-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.bm-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #303133;
+}
+.bm-desc {
+  font-size: 12px;
+  color: #909399;
+  line-height: 1.4;
+}
+.beautify-master.on .bm-desc {
+  color: #409eff;
+}
+
 .beautify-switch {
-  margin-top: 4px;
-  margin-bottom: 8px;
+  flex-shrink: 0;
+}
+
+/* 美颜选项 checkbox：去掉默认右间距、统一行高，避免长短不一挤在一起 */
+.settings-collapse :deep(.el-checkbox) {
+  margin-right: 0;
+  height: auto;
+  padding: 5px 0;
+  line-height: 1.5;
+}
+.settings-collapse :deep(.el-checkbox__label) {
+  line-height: 1.5;
 }
 
 .compliance-note {
@@ -1317,6 +1557,120 @@ async function handleDownload() {
   margin-top: 12px;
   padding-top: 10px;
   border-top: 1px dashed #ebeef5;
+}
+
+/* ===== Template Grid：紧凑双列卡片 =====
+   旧版每张卡「大图标+名称+尺寸」竖排 ~90px 高，6 张卡占掉右栏近半屏，
+   把背景色/美颜全顶到视口外。现在去掉图标、名称+尺寸紧凑竖排，
+   每张 ~48px，一屏内能看到全部高频规格。 */
+.template-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.template-card {
+  position: relative;
+  border: 1px solid #e4e7ed;
+  border-radius: 8px;
+  padding: 9px 12px;
+  cursor: pointer;
+  transition: all 0.2s;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  min-height: 48px;
+}
+.template-card:hover {
+  border-color: #409eff;
+  background: #f0f7ff;
+}
+.template-card.active {
+  border-color: #409eff;
+  background: #ecf5ff;
+  box-shadow: inset 0 0 0 1px #409eff;
+}
+/* 选中角标：替代旧的大图标，不占纵向空间 */
+.template-card.active::after {
+  content: '✓';
+  position: absolute;
+  top: 4px;
+  right: 8px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #409eff;
+}
+.template-card .tmpl-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: #303133;
+  line-height: 1.3;
+}
+.template-card .tmpl-size {
+  font-size: 11px;
+  color: #909399;
+  font-variant-numeric: tabular-nums;
+}
+.more-card {
+  border-style: dashed;
+  color: #909399;
+}
+.more-card .tmpl-name {
+  color: #909399;
+}
+.custom-card {
+  border-color: #e4e7ed;
+}
+
+/* 自定义尺寸面板 */
+.custom-size-panel {
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid #e4e7ed;
+  border-radius: 8px;
+  background: #fff;
+}
+.custom-size-inputs {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.custom-size-inputs .x-mark {
+  color: #909399;
+  font-size: 16px;
+}
+.unit {
+  font-size: 12px;
+  color: #909399;
+}
+
+/* 文件大小限制面板 */
+.file-size-panel {
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid #e4e7ed;
+  border-radius: 8px;
+  background: #fff;
+}
+.file-size-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.file-size-label {
+  font-size: 13px;
+  color: #606266;
+  white-space: nowrap;
+}
+.file-size-presets {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+.file-size-presets .el-button + .el-button {
+  margin-left: 0;
 }
 
 /* ===== Responsive ===== */

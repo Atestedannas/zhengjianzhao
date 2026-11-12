@@ -4,7 +4,7 @@
 > 都必须逐条核对本文档，并在描述中附上对应样本的前后对比。
 >
 > 代码锚点：
-> - 美颜红线 → `backend/app/core/image_engine/beautify.py`
+> - 美颜红线 → `backend/app/core/image_engine/beautify/`（包：`__init__.py` 入口 + `parts/01_config.py` 常量/档位、`02_levels.py` 预算钳制、`03`~`11` 依次Detection / 原语 / 蒙版 / 色调 / 痘印 / 身份 / 修图 / API；详见包内 `__init__.py` 的分卷清单）
 > - 抠图/边缘/光影 → `backend/app/core/image_engine/background.py`
 > - 构图红线 → `backend/app/core/image_engine/face_detect.py`
 > - 出图质量提示 → `backend/app/core/image_engine/pipeline.py`
@@ -94,7 +94,8 @@ LAB 的 L/a/b 都是 **0~255 尺度**（1 单位 ≈ 1 个 CIELAB 单位）。�
 > 复核口径：① 用 `tex_retain`（高频纹理保留率）；② 用分区权重/骨相保护图与两颊的对比；
 > ③④ 用唇区 `|Δa|`、牙齿 `ΔL/Δb`、眼区拉普拉斯能量；⑤ 用暗图/亮图的提亮增益比。
 > 离线断言在 `backend/tests/test_beautify_p1.py`；真机（mediapipe 关键点）指标
-> 由 `dsh_verify_beautify.py` 输出到 `dsh_ab_out/`，可直接目视复核。
+> 由 `backend/tests/p0_ab_audit.py`（区域色差 / 色斑 / 脸部对比图）与
+> `backend/tests/test_golden_samples.py`（黄金样本门禁）输出，可直接目视复核。
 
 ### 1.4.1 分区域处理系统（⑦⑧⑨，2026-11）
 
@@ -172,7 +173,7 @@ LAB 的 L/a/b 都是 **0~255 尺度**（1 单位 ≈ 1 个 CIELAB 单位）。�
 - 身份门禁：ArcFace 余弦相似度实测 0.996~0.999（阈值 0.90）。
 - `strength=0` 逐像素等于原图（入口短路，不跑链路）。
 
-**验收口径**（`dsh_studio_metrics.py` 生产口径 = 对齐→295×413→美颜）：
+**验收口径**（`backend/tests/p0_ab_audit.py` 生产口径 = 对齐→295×413→美颜）：
 
 | 指标 | 合规档 | 精修档 | 判读 |
 |------|--------|--------|------|
@@ -196,7 +197,9 @@ LAB 的 L/a/b 都是 **0~255 尺度**（1 单位 ≈ 1 个 CIELAB 单位）。�
 
 覆盖率低 = 皮肤蒙版大面积缺失 = 磨皮/匀肤/提亮全被「蒙版 × 0」乘掉。
 这是历史上反复「加参数但不生效」的结构性根因，与算子强度无关。
-`dsh_regress_compliant.py` 的 B 段专门断言这条修复（覆盖率 >1.5×，且身份 ≥0.99）。
+历史脚本 `dsh_regress_compliant.py` 的 B 段曾专门断言这条修复（覆盖率 >1.5×，
+且身份 ≥0.99）；该脚本已归档，现行 `backend/tests/test_golden_samples.py`
+以蒙版生效指标与身份相似度门禁覆盖同类回归。
 
 ---
 
@@ -307,19 +310,41 @@ S 曲线（S 曲线端点斜率为 0，会把羽化带压成等宽灰线）。
 
 ### 4.3 构图红线（人脸识别算法友好）
 
+> **口径（2026-11 眼位构图专项统一）**：所有纵向比例一律**从照片上边沿起算**。
+> 依据《出入境证件相片照相指引》（国家移民局 / ICAO DOC 9303）：成人「眼睛距相片
+> 上边缘 0.3H ~ 0.5H」、儿童上限 0.6H；居民身份证照片「眼睛距下边沿 ≥207px
+> （441px 高）」≈ 距顶部 ≤0.53H。旧版表格把眼位写成「距顶部 50%~60%」是口径
+> 误植，会让脸高占到画面 56%（即 2026-10 用户反馈的「大头贴」），且与国标 0.5H
+> 上限冲突，已废止。
+
 | 指标 | 要求 | 代码常量 |
 |------|------|----------|
-| 头顶留白 | 总高度 **5% ~ 10%** | `COMPOSE_TOP_MARGIN = 0.08` |
-| 眼睛位置 | 总高度 **50% ~ 60%** | `COMPOSE_EYE_LINE = 0.56` |
-| 脸部宽度 | 照片宽度 **60% ~ 70%** | `COMPOSE_FACE_WIDTH = 0.65` |
-| 双肩 | 水平且对称 | 由对齐缩放保证 |
+| 头顶发迹距上边沿 | 总高度 **5% ~ 10%** | `COMPOSE_TOP_MARGIN = 0.08` |
+| 眼睛距上边沿（成人） | 总高度 **30% ~ 50%** | `COMPOSE_EYE_LINE = 0.3633`，`MIN/MAX = 0.30/0.50` |
+| 头部宽度（含发） | 照片宽度 **60% ~ 70%** | `COMPOSE_FACE_WIDTH = 0.65` |
+| 双肩 | 完整可见、水平对称 | 头肩保护 `min_crop_h = 3 × Haar 脸高` |
 | 居中 | 人物水平居中 | `align_face` 以脸中心为锚 |
+
+**为什么目标值是 0.3633**：`eye_y - head_top = 0.85 × 脸高`，头肩保护把裁剪框高度
+锁在 `3 × 脸高`，故眼位 = 头顶留白 `0.08 + 0.85/3 = 0.3633`。双锚点求解与头肩
+保护因此是同一个几何解，不再互相覆盖。实测修正该常量前后，全部真实样张出图
+**像素级零差异**（`maxdiff=0`），P0/P1/P2 的 A/B 基线保持有效。
+
+**测量口径注意**：日志里的 `Haar框宽占比` 是 Haar 人脸框（眉弓→下巴的方形框）
+宽度，真实样张实测约 **46.7%**；标准中的「脸部宽度 53%~80%（出入境）/ 58%
+（居民身份证）」指**含发的头部宽度**，两者不可直接比较，不要拿 46.7% 去套
+60%~70%。
 
 `align_face()` 每次调用都会把**实际达成的三个比例写进日志**，便于抽检：
 
 ```
-Face aligned: ... | 头顶留白=8.1%(需5-10%) 眼位=55.8%(需50-60%) 脸宽占比=64.3%(需60-70%)
+Face aligned: ... | 头顶留白=8.1%(需5%-10%) 眼位=36.4%(距上边沿,需30%-50%) Haar框宽占比=46.7%(头部宽度目标60%-70%)
 ```
+
+**已知例外（不静默）**：源图太小或人脸太靠上时，「裁剪框不得超出原图」的收缩
+逻辑会优先保证不拉伸像素，代价是头顶留白可能归零（实测 231×268 蓝底证件照
+样张为 0.0%）。此时 `align_face` 会打 `Composition warning`，提示更换留白更充足
+的原图；几何本身不改（改几何会让全部 A/B 基线失效，需单独一轮重标定）。
 
 ---
 
@@ -409,26 +434,32 @@ py -3.10 -m venv ..\.venv-beautify
 
 ```powershell
 $env:PYTHONIOENCODING="utf-8"
-..\.venv-beautify\Scripts\python.exe dsh_verify_beautify.py   # 逐区域带符号指标 + 蒙版图
-..\.venv-beautify\Scripts\python.exe dsh_mp_bench.py          # 关键点/耗时
-..\.venv-beautify\Scripts\python.exe dsh_p1_ab.py             # guided/surface × adaptive A/B
-..\.venv-beautify\Scripts\python.exe dsh_retouch_bench.py     # 1200x1600 下的 _retouch 耗时
+..\.venv-beautify\Scripts\python.exe backend\tests\test_golden_samples.py        # 6 样本黄金门禁（身份/ITA/色差/色斑）
+..\.venv-beautify\Scripts\python.exe backend\tests\p0_ab_audit.py --tag check --params new  # 生产口径 A/B + 脸部对比图
+..\.venv-beautify\Scripts\python.exe backend\tests\test_composition.py --report  # 构图红线（距上边沿口径）
+..\.venv-beautify\Scripts\python.exe backend\tests\test_beautify_layout.py      # beautify 包结构自检
 ```
 
 精修档 / 生产口径验收（本轮新增，全部走「对齐→295×413→美颜」的真实几何）：
 
 ```powershell
-..\.venv-beautify\Scripts\python.exe dsh_studio_metrics.py tests\test_photo.jpg  # 逐指标对比合规/精修
-..\.venv-beautify\Scripts\python.exe dsh_prod_bench.py tests\test_photo.jpg --bg=white  # 成片并排 + 落盘
-..\.venv-beautify\Scripts\python.exe dsh_studio_sweep.py tests\test_photo.jpg     # 单项参数扫掠
-..\.venv-beautify\Scripts\python.exe dsh_pipeline_test.py tests\test_photo.jpg    # 端到端 pipeline + 耗时
-..\.venv-beautify\Scripts\python.exe dsh_regress_compliant.py tests\test_photo.jpg # 合规档零漂移 + 蒙版修复断言
-..\.venv-beautify\Scripts\python.exe dsh_face_zoom.py out.png A.jpg B.jpg         # 脸部特写并排
+..\.venv-beautify\Scripts\python.exe backend\tests\p0_ab_audit.py --summary       # 四组 A/B 汇总与对比图
+..\.venv-beautify\Scripts\python.exe backend\tests\p1_summary.py                  # P0/P1 三代指标汇总（历史留档）
+..\.venv-beautify\Scripts\python.exe backend\tests\test_beautify_p1.py            # 算子与合规红线
+..\.venv-beautify\Scripts\python.exe backend\tests\test_studio_beautify.py        # 影楼精修档等价性/确定性
+..\.venv-beautify\Scripts\python.exe backend\tests\beautify_fingerprint.py --check p3_ab_out\pre_split.json  # 重构逐字节等价
 ```
 
+> 历史上的 `dsh_*.py` / `probe*.py` / `apply_all_fixes*.py` / `patch_*.py`
+> 等一次性补丁与探针脚本，已于 2026-11 归档到
+> `p3_backup_20261111/legacy_scripts_20261111.tar.gz`（43 个文件，可解包恢复），
+> 不再作为验收入口；上文命令是现行等价入口。
+>
 > 本地路径含中文时 `cv2.data.haarcascades` 会加载失败（FileStorage 不支持非
-> ASCII 路径），`dsh_prod_bench.py` / `dsh_pipeline_test.py` 已内置把级联文件
-> 复制到临时 ASCII 目录的修补；服务器是 `/opt/...` 纯 ASCII 路径，不受影响。
+> ASCII 路径）。该坑已由 `backend/app/core/image_engine/cascade.py` 统一修复
+> （加载失败时把 Haar XML 复制到 ASCII 临时目录），生产代码与验收脚本共用
+> `frontal_face_cascade()`，不再需要各自打补丁；服务器 `/opt/...` 为纯 ASCII
+> 路径，不受影响。
 
 **判读口径（重要）**：真实小样张（<400px）上，整脸平均改动会落在 8bit
 往返量化噪声地板（±0.5 级）附近，**不要**用它判断磨皮强度；磨皮幅度要在

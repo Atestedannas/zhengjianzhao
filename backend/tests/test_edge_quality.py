@@ -132,18 +132,26 @@ def test_align_face_composition_measured():
             top_ratio = head_row / out.height
 
             assert FD.COMPOSE_TOP_MARGIN_MIN - 0.02 <= top_ratio <= FD.COMPOSE_TOP_MARGIN_MAX + 0.02, \
-                f"{tw}x{th} 头顶留白 {top_ratio:.1%} 超出 5%~10%"
+                f"{tw}x{th} 头顶留白 {top_ratio:.1%} 超出 " \
+                f"{FD.COMPOSE_TOP_MARGIN_MIN:.0%}~{FD.COMPOSE_TOP_MARGIN_MAX:.0%}"
+            # 【2026-11 眼位构图专项】眼位一律按「距上边沿」测量，
+            # 合规带 0.30~0.50（成人国家标准）；旧断言写死 50%~60% 属口径误植。
             assert FD.COMPOSE_EYE_LINE_MIN - 0.02 <= eye_ratio <= FD.COMPOSE_EYE_LINE_MAX + 0.02, \
-                f"{tw}x{th} 眼位 {eye_ratio:.1%} 超出 50%~60%"
+                f"{tw}x{th} 眼位(距上边沿) {eye_ratio:.1%} 超出 " \
+                f"{FD.COMPOSE_EYE_LINE_MIN:.0%}~{FD.COMPOSE_EYE_LINE_MAX:.0%}"
 
-            # 由两线间距反推缩放，再算脸宽占比
+            # 由两线间距反推缩放，再算脸宽占比。
+            # 注意这是 Haar 人脸框宽：头肩保护把裁高锁在 3×脸高，
+            # 295:413 下理论值约 39%；标准 60%~70% 指含发的头部宽度，
+            # 不能拿 Haar 框直接套（真实样张实测 46.7%）。
             span_px = max(eye_row - head_row, 1)
             scale = span_px / max(eye_y - head_top, 1)
             face_w = fake.width * scale / out.width
-            assert 0.50 <= face_w <= 0.80, f"{tw}x{th} 脸宽占比 {face_w:.1%} 偏离 60%~70% 过多"
+            assert 0.33 <= face_w <= 0.70, \
+                f"{tw}x{th} Haar框宽占比 {face_w:.1%} 偏离预期 33%~70% 过多"
 
-            print(f"  [OK] {tw}x{th}: 头顶留白={top_ratio:.1%} 眼位={eye_ratio:.1%} "
-                  f"脸宽占比={face_w:.1%}")
+            print(f"  [OK] {tw}x{th}: 头顶留白={top_ratio:.1%} "
+                  f"眼位(距上边沿)={eye_ratio:.1%} Haar框宽占比={face_w:.1%}")
 
     finally:
         FD.detect_faces = orig

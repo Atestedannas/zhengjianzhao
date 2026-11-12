@@ -1,4 +1,12 @@
-"""图像处理流水线编排：crop → beautify → upscale sharpen → background → output sharpen → dpi → compress."""
+"""图像处理流水线编排：几何到工作分辨率 → 美颜 → 缩到目标像素 → 换底 → 单次锐化 → dpi → compress.
+
+【2026-11 P0 顺序修复】美颜原本放在缩放后的 295×413 小图上执行：整套算法依赖
+MediaPipe 关键点 + SegFormer 人脸解析（512 人脸裁图训练），在目标分辨率上瞳距
+只有 17~50px，关键点经常检不出、皮肤解析覆盖率仅 1%~10%，只能走 fallback
+蒙版 —— 这是「美颜几乎看不出变化」和「时好时坏」的结构性根因。
+现在统一在**工作分辨率**（短边 1024~1536、脸宽 60~70%、瞳距 ≥100px）上完成
+几何与美颜，再一次性缩回目标像素；baseline 走完全相同的几何链路，控制变量不变。
+"""
 
 import time
 from dataclasses import dataclass, field
@@ -7,7 +15,7 @@ from typing import Optional, Tuple
 from PIL import Image, ImageFilter
 from loguru import logger
 
-from app.core.image_engine.crop import resize_crop
+from app.core.image_engine.crop import resize_crop, face_aware_crop
 from app.core.image_engine.beautify import apply_beautify, BeautyLevel
 from app.core.image_engine.resize import resize_image, ResizeMode
 from app.core.image_engine.face_detect import (
@@ -26,6 +34,48 @@ from app.core.image_engine.format_converter import convert_format
 _COMPLIANT_LEVELS = frozenset({
     BeautyLevel.OFF, BeautyLevel.COMPLIANT, BeautyLevel.MEDIUM, BeautyLevel.HIGH,
 })
+
+# ---- 美颜工作分辨率（P0：保证「脸足够大」这个前置条件）----
+# 关键点/皮肤解析模型是在 512 人脸裁图上训练的，瞳距 ≥100px 才稳定。
+# 工作短边取 1024~1536，且**不超过原图短边**（放大超过原图不会增加信息）。
+# 放大倍率不足 2× 时不启用工作图，避免无意义的插值往返。
+WORK_SHORT_MIN = 1024
+WORK_SHORT_MAX = 1536
+WORK_MIN_SCALE = 2.0
+
+
+def _working_geometry(
+    orig_size: Tuple[int, int], target_w: int, target_h: int,
+) -> Optional[Tuple[int, int]]:
+    """算出「美颜应在其上执行」的工作尺寸；不划算时返回 None（保持旧口径）."""
+    short = min(target_w, target_h)
+    orig_short = min(orig_size)
+    if short <= 0 or orig_short <= 0:
+        return None
+    ideal = max(WORK_SHORT_MIN, short * 3)
+    work_short = min(WORK_SHORT_MAX, ideal, orig_short)
+    if work_short < short * WORK_MIN_SCALE:
+        return None
+    scale = work_short / float(short)
+    return max(target_w, int(round(target_w * scale))), \
+           max(target_h, int(round(target_h * scale)))
+
+
+def _use_working_resolution(
+    params: "ProcessParams", orig_size: Tuple[int, int], has_both_dims: bool,
+) -> Optional[Tuple[int, int]]:
+    """有明确目标尺寸 + 目标尺寸偏小 → 走工作分辨率.
+
+    【故意不看 beautify_level】render_baseline 会把 level 置 0，如果这里按
+    「美颜开启」判定，基线就会走另一条缩放链路，两张图虽然同像素但插值次数
+    不同 —— 控制变量被破坏，前端对比会出现「基线更锐」的假差异。
+    几何决策只依赖尺寸，与是否美颜无关。
+    """
+    if not has_both_dims:
+        return None
+    if min(params.width, params.height) >= 600:
+        return None   # 目标本身已是大图，美颜在目标分辨率上就有足够尺度
+    return _working_geometry(orig_size, params.width, params.height)
 
 
 @dataclass
@@ -53,10 +103,13 @@ class ProcessParams:
     beautify_tone: bool = True       # ⑦ 分区域低频肤色修正（额头/两颊/下颌/脖子）
     beautify_texture: bool = True    # ⑧ 纹理回注（磨皮拿走的毛孔细节补回来）
     beautify_feature: bool = True    # ⑨ 五官轮廓带局部增强（眼/眉/鼻翼/唇缘）
+    beautify_spot: bool = True       # ⑮ 局部色斑抑制（痘印/红斑的 a*/b* 小尺度异常，P1 新增）
     retouch_strength: float = 1.0    # ⑥ 用户「还原度」滑杆 0~1（默认 1=完整档位，0=不修图）
 
     # === 证件照对齐 ===
-    id_photo_align: bool = False   # 是否启用证件照人脸对齐
+    # 【2026-11 P0】默认开启：不开启时 resize_crop 只居中不放大，全身照的脸
+    # 缩到 295×413 后只有约 45px，关键点检不出 → 美颜静默降级。
+    id_photo_align: bool = True   # 是否启用证件照人脸对齐
     gender: Optional[str] = None   # male / female / None
 
     # === 压缩 ===
@@ -77,6 +130,9 @@ class ProcessResult:
     warnings: list = field(default_factory=list)
     faces_detected: int = 0
     processing_time_ms: int = 0
+    # 美颜生效报告（mode / parse / iod / mask_coverage / skin_diff / identity）
+    # —— 「没生效」必须能被系统自己发现并透传给前端，不再静默出图。
+    beautify_report: dict = field(default_factory=dict)
 
 
 # 全部标准证件照像素集合（用于合规判定）
@@ -156,26 +212,24 @@ def _upscale_sharpen(image: Image.Image, target_w: int, target_h: int,
 
 
 def _output_sharpen(image: Image.Image, target_w: int, target_h: int,
-                    pre_resize_size: Optional[Tuple[int, int]] = None) -> Image.Image:
-    """输出锐化：缩小/换底之后补偿锐度（对应 PS 修图流程的最后一步「输出锐化」）.
+                    pre_resize_size: Optional[Tuple[int, int]] = None,
+                    skin_aware: bool = True) -> Image.Image:
+    """**唯一一次**输出锐化：所有插值/换底软化之后、DPI/编码之前执行.
 
-    【背景】_upscale_sharpen 只覆盖放大路径（zoom>1.02）；而证件照主路径是
-    高清原图缩到 295×413 这类小规格 —— LANCZOS 缩图 + 抠图换底的发丝羽化
-    都会让画面系统性偏软，这是「美颜后发糊」的最大单一来源。PS 流程里
-    「输出锐化」永远是最后一步，这里在换底之后、编码之前补上同一环节。
-
-    【做法】只锐化 LAB 的 L 通道（避免饱和边缘产生色边），UnsharpMask 半径
-            随输出尺寸取 0.7~1.0px、幅度 60%、threshold=0（不跳过毛孔级
-            微观对比）。仅当确实发生了缩小（zoom<0.98）才执行：
-              * zoom>1.02 → 放大路径，已由 _upscale_sharpen 处理（互斥不叠加）；
-              * zoom≈1   → 没有发生插值，没有软化，不锐化。
+    【2026-11 P0】旧链路有两级锐化（_upscale_sharpen + 本函数），它们与
+    beautify 的纹理回注共抢同一份「细节预算」：实测合规档净高频比 1.01~1.04，
+    即「越修越锐」，磨皮全被锐化吃回去。现在合并为一次，并对皮肤区降权：
+      * 非皮肤（发丝/衣领/背景边缘）保持 0.55 幅度，出图不糊；
+      * 皮肤区幅度 ×0.15，给磨皮留下可感知的空间；
+      * 放大路径用 0.40（放大插值本身偏软，但不需要两级叠加）。
+    目标净高频比 0.92~0.96：皮肤确实被修饰，五官/发丝仍然清楚。
     """
     if not pre_resize_size:
         return image
     base_w, base_h = pre_resize_size
     zoom = max(target_w / base_w, target_h / base_h)
-    if zoom > 1.02 or zoom >= 0.98:
-        return image
+    if 0.98 <= zoom <= 1.02:
+        return image   # 没有发生插值，没有软化，不锐化
 
     import cv2
     import numpy as np
@@ -185,15 +239,62 @@ def _output_sharpen(image: Image.Image, target_w: int, target_h: int,
     lab = cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB)
     l_chan = lab[:, :, 0].astype(np.float32)
     radius = 0.7 if min(w, h) <= 600 else 1.0
-    # threshold=2：跳过 ≤2 级的微观起伏 —— 这些正是抠图羽化带的过渡像素与
-    # 压缩噪声，锐化它们只会把发丝边缘拉出白边/光晕（用户实测反馈）。
-    # 真实的毛发/衣领结构对比度远大于 2 级，锐化效果不受影响。
+    amount = 0.55 if zoom < 0.98 else 0.40
     blur = cv2.GaussianBlur(l_chan, (0, 0), radius)
-    lab[:, :, 0] = np.clip(l_chan + (l_chan - blur) * 0.55, 0.0, 255.0).astype(np.uint8)
+
+    if skin_aware:
+        # YCrCb 肤色椭圆 → 软掩膜（0~1）；只降权皮肤，不碰发丝/衣领的结构边缘
+        ycrcb = cv2.cvtColor(bgr, cv2.COLOR_BGR2YCrCb)
+        cr = ycrcb[:, :, 1].astype(np.float32)
+        cb = ycrcb[:, :, 2].astype(np.float32)
+        yy = ycrcb[:, :, 0].astype(np.float32)
+        skin = ((cr >= 133) & (cr <= 180) & (cb >= 77) & (cb <= 127) & (yy > 60))
+        skin = cv2.GaussianBlur(skin.astype(np.float32), (0, 0), 1.5)
+        gain = amount * (1.0 - 0.85 * skin)
+        skin_pct = float(skin.mean())
+    else:
+        gain = amount
+        skin_pct = 0.0
+
+    lab[:, :, 0] = np.clip(l_chan + (l_chan - blur) * gain, 0.0, 255.0).astype(np.uint8)
     out = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
-    logger.info(f"Output sharpen: zoom={zoom:.2f} radius={radius} thr=2 "
-                f"(downscale/bg-soften compensation)")
+    logger.info(
+        f"Output sharpen (single pass): zoom={zoom:.2f} radius={radius} "
+        f"amount={amount:.2f} skin_aware={skin_aware} skin={skin_pct:.1%}"
+    )
     return Image.fromarray(np.ascontiguousarray(out[:, :, ::-1]))
+
+
+def _beautify_warnings(report: dict) -> list:
+    """把美颜生效报告翻译成用户能看懂的告警（不再静默出「没美颜的图」）."""
+    if not report:
+        return []
+    out = []
+    if not report.get("applied"):
+        out.append(
+            f"美颜未生效（{report.get('reason', 'unknown')}）：本次出图等同原图，"
+            "建议换正面、清晰、脸部占比更大的照片后重试"
+        )
+        return out
+    if report.get("mode") == "fallback":
+        out.append(
+            "美颜已降级：未检出人脸关键点，仅使用基础肤色蒙版，修饰效果有限；"
+            "建议换正面、清晰的照片"
+        )
+    coverage = float(report.get("mask_coverage", 0.0) or 0.0)
+    if 0.0 < coverage < 0.03:
+        out.append(
+            f"美颜生效面积偏小（{coverage:.1%}），效果可能不明显；建议使用脸部占比更大的原图"
+        )
+    iod = float(report.get("iod_px", 0.0) or 0.0)
+    if 0.0 < iod < 40.0:
+        out.append(
+            f"人脸尺度偏小（瞳距约 {iod:.0f}px），修饰精度受限；建议使用更高分辨率原图"
+        )
+    sim = report.get("identity_sim")
+    if sim is not None and float(sim) < 0.90:
+        out.append(f"身份校验偏低（{float(sim):.3f}），建议降低美颜强度后重试")
+    return out
 
 
 def render_baseline(image: Image.Image, params: ProcessParams) -> ProcessResult:
@@ -228,23 +329,25 @@ def process_image(
     image: Image.Image, params: ProcessParams,
 ) -> ProcessResult:
     """
-    图像处理流水线（增强版）:
+    图像处理流水线（P0 顺序：几何 → 美颜 → 缩放 → 换底 → 单次锐化 → 编码）:
 
     Step 1: 人脸检测（获取人脸信息，用于后续步骤）
-    Step 2: crop/align/resize — 裁剪/证件照对齐/尺寸调整
-    Step 3: beautify — 美颜（在目标分辨率上执行，半径与输出匹配）
-    Step 3.5: 放大补偿锐化（仅放大时）
-    Step 4: dpi — 设置 DPI
-    Step 5: background — AI 抠图换底
-    Step 5.5: output sharpen — 输出锐化（缩小/换底后补偿锐度，仅缩图路径）
-    Step 6: compress — 压缩到目标大小
-    Step 7: format — 格式转换（JPEG/PNG/PDF 等）
+    Step 2a: crop/align/resize 到 **工作分辨率**（短边 1024~1536，脸宽 60~70%）
+    Step 2b: beautify —— 在原生尺度上执行（关键点/皮肤解析模型需要足够大的脸）
+    Step 2c: 一次性 LANCZOS 缩回目标像素（295×413 等）
+    Step 3: background —— AI 抠图换底
+    Step 4: output sharpen —— 唯一一次输出锐化（皮肤区降权）
+    Step 5: dpi → compress → format
+
+    render_baseline 走完全相同的几何链路（只关美颜/换底），因此两张图的
+    裁剪窗口、对齐方式、缩放比例严格一致，差异只剩美颜本身。
 
     返回 ProcessResult
     """
     start_time = time.time()
     warnings = []
     faces_count = 0
+    beautify_report: dict = {}
 
     # Step 1: 人脸检测
     try:
@@ -255,10 +358,11 @@ def process_image(
         logger.warning(f"Face detection failed: {e}")
         faces = []
 
-    # Step 2: 裁剪/对齐/尺寸调整（先 resize）
-    # 【顺序说明】美颜放在 resize 之后：美颜半径按瞳距换算，在小原图上
-    # （iod 仅 50px）半径被压到 3~4px 几乎不起作用；放到目标分辨率上执行，
-    # 半径与最终输出匹配，且省掉"先磨皮再放大"的二次插值损失。
+    # ---- Step 2a: 几何到「工作分辨率」----
+    # 【P0 顺序修复】美颜必须在「脸足够大」的图上执行。旧顺序先缩到 295×413，
+    # 瞳距只剩 17~50px，关键点与皮肤解析模型全部失效 → fallback 蒙版覆盖
+    # 1.4%，效果归零。现在几何先做到短边 1024~1536（脸宽 60~70%），
+    # 美颜跑完再一次性缩回目标像素。
     pre_resize_size = image.size
     # 「按宽度 / 按高度」只需要一个维度：单独给出时应仍然生效，
     # 否则前端选「按宽度」只填宽度时会被静默跳过（输出原尺寸）。
@@ -270,9 +374,17 @@ def process_image(
         elif params.resize_mode == "by_height" and params.height > 0:
             single_axis_mode = ResizeMode.BY_HEIGHT
 
+    work_size = _use_working_resolution(params, pre_resize_size, has_both_dims)
+    geom_w, geom_h = work_size if work_size else (params.width, params.height)
+    if work_size:
+        logger.info(
+            f"Beautify working resolution: {pre_resize_size} -> {work_size} "
+            f"-> target {(params.width, params.height)}"
+        )
+
     if has_both_dims:
         if params.id_photo_align and faces_count > 0:
-            # 证件照人脸对齐模式
+            # 证件照人脸对齐模式（对齐到工作分辨率，构图比例不变）
             try:
                 align_kwargs = {}
                 if params.gender:
@@ -281,14 +393,15 @@ def process_image(
                     warnings.append(
                         f"证件照推荐服装({params.gender}): {idp.get('clothing', '深色有领上衣')}"
                     )
-                image = align_face(image, params.width, params.height, **align_kwargs)
+                image = align_face(image, geom_w, geom_h, **align_kwargs)
             except Exception as e:
                 warnings.append(f"Face alignment failed: {e}")
-                # 回退到普通裁剪
-                image = resize_crop(image, params.width, params.height)
+                # 降级也必须保证「脸足够大」，不能退回纯中心裁切
+                image = face_aware_crop(image, geom_w, geom_h)
         elif params.resize_mode == "crop":
-            # 原有裁剪模式（人脸检测辅助）
-            image = resize_crop(image, params.width, params.height)
+            # 未开启对齐时用「按人脸比例放大」的裁切，避免全身照里脸过小
+            image = (face_aware_crop(image, geom_w, geom_h) if work_size
+                     else resize_crop(image, params.width, params.height))
         else:
             # 纯缩放模式（不裁剪，保持比例）
             mode_map = {
@@ -299,7 +412,7 @@ def process_image(
                 "by_height": ResizeMode.BY_HEIGHT,
             }
             mode = mode_map.get(params.resize_mode, ResizeMode.EXACT)
-            image = resize_image(image, params.width, params.height, mode=mode, upscale=params.upscale)
+            image = resize_image(image, geom_w, geom_h, mode=mode, upscale=params.upscale)
     elif single_axis_mode is not None:
         # 单维度等比缩放：未给出的那一维传 0，resize_image 会按原图比例算出。
         image = resize_image(
@@ -312,10 +425,11 @@ def process_image(
     else:
         warnings.append("Skipped resize: target width/height is 0")
 
-    # Step 3: 美颜处理（在目标分辨率上执行）
+    # ---- Step 2b: 美颜（在原生/工作分辨率上执行）----
     # 艺术档（4）与影楼精修档（5）都是「不受证件照合规红线约束」的档位：
     # 显式关闭 compliant 钳制；其余档位（含误传的 2/3）仍默认走红线钳制。
     if params.beautify_level > BeautyLevel.OFF:
+        report: dict = {}
         try:
             image = apply_beautify(
                 image,
@@ -333,17 +447,27 @@ def process_image(
                 tone=params.beautify_tone,
                 texture=params.beautify_texture,
                 feature=params.beautify_feature,
+                spot=params.beautify_spot,
+                report=report,
             )
         except Exception as e:
-            warnings.append(f"Beautify failed: {e}")
+            report = {"applied": False, "reason": "exception", "error": str(e)}
+            warnings.append(f"美颜未生效（处理异常，已按原图出图）：{e}")
             logger.warning(f"Beautify failed, continuing: {e}")
+        beautify_report = report
+        warnings.extend(_beautify_warnings(report))
+        logger.info(f"Beautify report: {report}")
 
-    # Step 3.5: 放大补偿 —— 小图放大后 LANCZOS 偏软，观感像"塑料/假面"，
-    # 补一层轻锐化把肌肤微观对比度找回来。只在放大时启用，缩小不锐化。
-    if params.width > 0 and params.height > 0:
-        image = _upscale_sharpen(image, params.width, params.height, pre_resize_size)
+    # ---- Step 2c: 一次性缩回目标像素 ----
+    # baseline 走同一段代码（level=OFF 但 work_size 判定一致），几何严格对齐。
+    if work_size and has_both_dims:
+        image = image.resize((params.width, params.height), Image.LANCZOS)
+        logger.info(f"Working -> target downscale: {work_size} -> {image.size}")
 
-    # Step 5: 背景替换（AI 抠图失败时降级保留原图，避免整单裸 500）
+    # 【已移除】旧 Step 3.5 的 _upscale_sharpen：与 _output_sharpen 两级叠加
+    # 会吃光磨皮（实测净高频比 >1.0，越修越锐）。现在全链路只锐化一次。
+
+    # Step 3: 背景替换（AI 抠图失败时降级保留原图，避免整单裸 500）
     if params.bg_color and params.bg_color != "keep":
         try:
             image = replace_background(image, params.bg_color)
@@ -351,12 +475,12 @@ def process_image(
             warnings.append(f"AI抠图失败(2004)，保留原背景: {e}")
             logger.warning(f"Background replacement failed, keeping original: {e}")
 
-    # Step 5.5: 输出锐化 —— 缩图与换底羽化都会软化画面；PS 流程的「输出锐化」
-    # 必须放在所有软化环节之后、DPI/编码之前。与放大路径互斥（不叠加锐化）。
+    # Step 4: 输出锐化 —— 全链路唯一一次，放在所有软化环节之后、编码之前。
+    # 皮肤区降权，给磨皮留出可感知的空间（详见 _output_sharpen 注释）。
     if params.width > 0 and params.height > 0:
         image = _output_sharpen(image, params.width, params.height, pre_resize_size)
 
-    # Step 6: DPI 设置
+    # Step 5: DPI 设置
     # 【顺序】必须在抠图/锐化之后、压缩之前：前面的步骤都返回新 Image 对象，
     # 会丢掉 info['dpi']。放最后设置，再由 binary_compress 显式写进 JPEG。
     image = adjust_dpi(image, params.dpi)
@@ -394,7 +518,9 @@ def process_image(
             width=params.width,
             height=params.height,
             dpi=params.dpi,
-            is_id_photo=bool(params.id_photo_align),
+            # id_photo_align 现在默认为 True，不能再拿它判断「是不是证件照」，
+            # 否则自定义尺寸会平白收到「非标准证件照像素」告警。
+            is_id_photo=(params.width, params.height) in _STANDARD_PX,
         )
     )
 
@@ -411,12 +537,14 @@ def process_image(
         warnings=warnings,
         faces_detected=faces_count,
         processing_time_ms=elapsed_ms,
+        beautify_report=beautify_report,
     )
 
     logger.info(
         f"Pipeline done: {result.result_pixels}@{result.result_dpi}DPI "
         f"→ {result.result_size_kb:.1f}KB {result.output_format} q={quality} "
         f"beauty={params.beautify_level} faces={faces_count} "
+        f"beautify_applied={beautify_report.get('applied')} "
         f"in {elapsed_ms}ms"
     )
     return result

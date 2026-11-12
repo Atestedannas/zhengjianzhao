@@ -253,12 +253,19 @@ class PhotoSystemTester:
         """
         分析图片清晰度（是否模糊/抽象）.
         使用拉普拉斯方差法：方差越大越清晰，越小越模糊.
+
+        【口径说明】抠图换底后背景是大面积纯色平坦区（白底占比可达 70%+），
+        对整图算方差会被平坦区稀释，出现"人物清晰但全图指标偏低"的误报。
+        因此先按四角中位数估计背景色、剔除均匀背景（并内缩 2px 去掉换底
+        羽化过渡带的强边缘），只对前景（人物）区域统计方差；
+        前景像素过少（背景非均匀纯色）时回退全图统计。
         """
         try:
-            img = Image.open(BytesIO(image_bytes)).convert("L")
+            img = Image.open(BytesIO(image_bytes)).convert("RGB")
             # 缩放到合理尺寸以加速计算
             img.thumbnail((512, 512), Image.LANCZOS)
-            arr = np.array(img, dtype=np.float64)
+            rgb = np.array(img, dtype=np.float64)
+            arr = np.array(img.convert("L"), dtype=np.float64)
 
             # 拉普拉斯卷积核
             kernel = np.array([[0, 1, 0], [1, -4, 1], [0, 1, 0]], dtype=np.float64)
@@ -268,7 +275,30 @@ class PhotoSystemTester:
                 for j in range(1, w - 1):
                     laplacian[i, j] = np.sum(arr[i - 1:i + 2, j - 1:j + 2] * kernel)
 
-            variance = float(laplacian.var())
+            # 四角中位数估计背景色，构建前景掩码（剔除均匀纯色背景）
+            e = max(2, min(h, w) // 20)
+            corners = np.vstack([
+                rgb[:e, :e].reshape(-1, 3),
+                rgb[:e, -e:].reshape(-1, 3),
+                rgb[-e:, :e].reshape(-1, 3),
+                rgb[-e:, -e:].reshape(-1, 3),
+            ])
+            bg_color = np.median(corners, axis=0)
+            fg_mask = np.abs(rgb - bg_color).max(axis=2) > 25.0
+            # 内缩 2px，排除换底羽化过渡带（那里的强边缘会虚高指标）
+            for _ in range(2):
+                fg_mask = (fg_mask & np.roll(fg_mask, 1, 0) & np.roll(fg_mask, -1, 0)
+                           & np.roll(fg_mask, 1, 1) & np.roll(fg_mask, -1, 1))
+            fg_ratio = float(fg_mask.mean())
+
+            fg_vals = laplacian[1:-1, 1:-1][fg_mask[1:-1, 1:-1]]
+            if fg_vals.size > 100:
+                variance = float(fg_vals.var())
+                scope = "foreground"
+            else:
+                variance = float(laplacian.var())
+                scope = "full"
+
             is_blurry = variance < BLUR_THRESHOLD
             is_sharp = variance > SHARP_THRESHOLD
 
@@ -281,6 +311,8 @@ class PhotoSystemTester:
 
             return {
                 "laplacian_variance": round(variance, 2),
+                "sharpness_scope": scope,
+                "foreground_ratio": round(fg_ratio, 4),
                 "is_blurry": is_blurry,
                 "is_sharp": is_sharp,
                 "verdict": verdict,

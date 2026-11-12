@@ -335,6 +335,8 @@ export interface TemplateItem {
   output_format: string
   physical_size_mm: string
   remark: string
+  /** 后端可选返回：用于「高频规格」排序，缺省时退回原始顺序 */
+  usage_count?: number
 }
 
 export function getTemplates(): Promise<{ items: TemplateItem[]; count: number }> {
@@ -368,6 +370,8 @@ export interface ProcessParams {
   beautify_texture?: boolean
   /** ⑨ 五官轮廓带局部增强（眼/眉/鼻翼/唇缘，不改形状） */
   beautify_feature?: boolean
+  /** ⑮ 局部色斑抑制（痘印/泛红，P1 新增；默认开，传 false 可回滚该轴） */
+  beautify_spot?: boolean
   retouch_strength?: number
   id_photo_align?: boolean
   gender?: string
@@ -375,6 +379,26 @@ export interface ProcessParams {
 
 /** 处理记录状态：pending/processing 需继续轮询，success/failed 为终态 */
 export type ProcessStatusValue = 'pending' | 'processing' | 'success' | 'failed'
+
+/** 美颜生效报告（后端 P0 可观测性）：用于把「静默降级」变成显式提示 */
+export interface BeautifyReport {
+  applied?: boolean
+  reason?: string
+  mode?: 'landmark' | 'fallback' | string
+  parse?: string
+  landmark_faces?: number
+  iod_px?: number
+  mask_coverage?: number
+  skin_diff?: number
+  identity_sim?: number | null
+  compliant?: boolean
+  level?: number
+  strength?: number
+  work_size?: number[]
+  /** P1：本轮实际生效的局部色斑抑制强度（0 表示该轴被关闭） */
+  spot_strength?: number
+  error?: string
+}
 
 /** 处理结果字段：同步返回成功与状态接口 success 时同名同义 */
 export interface ProcessResultFields {
@@ -393,6 +417,8 @@ export interface ProcessResultFields {
   mime_type?: string
   warnings?: string[]
   faces_detected?: number
+  /** 美颜是否真的生效、以及生效质量（mode/iod/蒙版覆盖/身份相似度） */
+  beautify_report?: BeautifyReport
   processing_time_ms?: number
   remaining_free_count?: number
   unlimited?: boolean
@@ -428,6 +454,7 @@ export interface ProcessResult {
   mime_type: string
   warnings: string[]
   faces_detected: number
+  beautify_report: BeautifyReport
   processing_time_ms: number
   free_used: boolean
   remaining_free_count: number
@@ -453,6 +480,7 @@ export function processPhoto(file: File, params: ProcessParams): Promise<Process
   if (params.beautify_tone !== undefined) formData.append('beautify_tone', String(params.beautify_tone))
   if (params.beautify_texture !== undefined) formData.append('beautify_texture', String(params.beautify_texture))
   if (params.beautify_feature !== undefined) formData.append('beautify_feature', String(params.beautify_feature))
+  if (params.beautify_spot !== undefined) formData.append('beautify_spot', String(params.beautify_spot))
   if (params.retouch_strength !== undefined) formData.append('retouch_strength', String(params.retouch_strength))
   if (params.id_photo_align !== undefined) formData.append('id_photo_align', String(params.id_photo_align))
   if (params.gender) formData.append('gender', params.gender)

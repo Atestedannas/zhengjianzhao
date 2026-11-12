@@ -82,6 +82,21 @@ const PRIMARY_BG_COLORS = [
   'gray_light', 'gray_mid', 'gray_deep',
 ]
 
+/**
+ * 模板 allowed_bg_colors 组级色名 → 面板分组别名.
+ *
+ * 【为什么需要这张表】模板里写的是组级意图（"blue"/"red"/"gray"），但后端
+ * /bg-colors 的 standard 色板里根本没有同名条目（蓝只有 blue_std/blue_gov…），
+ * 直接 byName.get('blue') 得到 undefined → 组映射失败 → 蓝/红/灰整组被过滤掉，
+ * 面板上只剩「白」。2026-11-06 用户实测：公务员1寸（允许白+蓝）只显示白底。
+ */
+const GROUP_NAME_ALIAS: Record<string, string> = {
+  white: '白',
+  blue: '蓝',
+  red: '红',
+  gray: '灰',
+}
+
 /** 机型兜底色板（后端 /bg-colors 不可达时用，色值必须与后端一致） */
 const FALLBACK_BG_COLORS: BgColor[] = [
   { name: 'keep', rgb: [-1, -1, -1], group: '其他', label: '保留原背景', hex: '' },
@@ -228,6 +243,8 @@ function toProcessResult(data: ProcessResultFields & { record_id: number }, free
     mime_type: data.mime_type || '',
     warnings: data.warnings || [],
     faces_detected: data.faces_detected ?? 0,
+    // 美颜生效报告：前端据此把「静默降级 / 未生效」显式告诉用户
+    beautify_report: data.beautify_report || {},
     processing_time_ms: data.processing_time_ms ?? 0,
     free_used: freeUsed,
     remaining_free_count: data.remaining_free_count ?? -1,
@@ -265,8 +282,11 @@ export const usePhotoStore = defineStore('photo', () => {
   // 0=关闭原图直出, 1=自然微调（证件照默认档，后端强制合规红线）,
   // 4=艺术档（仅非证件照）, 5=影楼精修（强磨皮/匀肤/塑形/白净，仅非报名场景）
   const beautifyLevel = ref(1)
-  // 「还原度」滑杆：0~1，1=完整档位强度，0.7=轻修（默认，以真实为主），0=原图
-  const retouchStrength = ref(0.7)
+  // 「还原度」滑杆：0~1，1=完整档位强度，0=原图。
+  // 【2026-11 P0】默认 1.0：旧默认 0.7 与前端「推荐 40%」叠加自适应连乘后，
+  // 合规档净效果几乎为零（实测皮肤平均改动 1.25/255）。红线本身不靠滑杆守，
+  // 而是由后端 _clamp_compliant 硬钳制，滑杆拉满也不会突破红线。
+  const retouchStrength = ref(1.0)
   const beautifyOptions = ref({
     smooth: true,
     brighten: true,
@@ -276,13 +296,23 @@ export const usePhotoStore = defineStore('photo', () => {
     texture: true,
     feature: true,
   })
-  const idPhotoAlign = ref(false)
+  // 【2026-11 P0】默认开启人脸对齐：关闭时 resize_crop 只居中不放大，
+  // 全身照的脸缩到 295×413 后只剩约 45px，关键点检不出 → 美颜静默降级。
+  // 报名/考试证件照为主场景，构图红线要求脸宽 60~70%，对齐必须默认开。
+  const idPhotoAlign = ref(true)
   const gender = ref<'male' | 'female' | ''>('')
   const outputFormat = ref('JPEG')
   const dpi = ref(300)
   const customWidth = ref(0)
   const customHeight = ref(0)
   const resizeMode = ref('crop')
+  /**
+   * 输出文件大小上限（KB）。0 = 不额外限制，由后端全局默认（100KB）或所选
+   * 规格的模板默认值决定。很多报名网站对证件照体积有硬性要求（如 ≤200KB、
+   * 20~100KB），用户在这里直接填公告里的上限即可；后端用二分法压 JPEG
+   * quality 保证不超上限，同时在不超的前提下给最高画质。
+   */
+  const maxKb = ref(0)
 
   // ===== 计算属性 =====
   const currentTemplate = computed(() => {
@@ -320,7 +350,7 @@ export const usePhotoStore = defineStore('photo', () => {
       // 把模板允许的「组级色名」映射成分组集合，再据此过滤标准色号
       const allowedGroups = new Set(
         allowed
-          .map((n) => byName.get(n)?.group)
+          .map((n) => byName.get(n)?.group || GROUP_NAME_ALIAS[n])
           .filter((g): g is string => !!g && g !== '其他'),
       )
       const shown = common.filter((c) => allowed.includes(c.name)
@@ -574,6 +604,8 @@ export const usePhotoStore = defineStore('photo', () => {
         template_id: selectedTemplate.value || undefined,
         width: customWidth.value || undefined,
         height: customHeight.value || undefined,
+        // 0 = 用户没设上限 → 不发送该字段，后端用模板默认 / 全局默认 100KB
+        max_kb: maxKb.value > 0 ? maxKb.value : undefined,
         resize_mode: resizeMode.value,
         upscale: true,
         dpi: dpi.value,
@@ -647,6 +679,7 @@ export const usePhotoStore = defineStore('photo', () => {
     customWidth.value = 0
     customHeight.value = 0
     resizeMode.value = 'crop'
+    maxKb.value = 0
   }
 
   /** 选择模板 */
@@ -658,6 +691,8 @@ export const usePhotoStore = defineStore('photo', () => {
       outputFormat.value = tmpl.output_format
       customWidth.value = tmpl.width_px
       customHeight.value = tmpl.height_px
+      // 预填规格的大小上限，用户可在此基础上改（后端：显式传入优先于模板默认）
+      maxKb.value = tmpl.max_kb || 0
       // 默认背景色：优先用模板允许的色（同分组也算，见 availableBgColors）。
       // 【为什么不能直接用 allowed[0]】模板可能写组级色名（"blue"），也可能写
       // 非常用色（pearl_white）。直接取 allowed[0]，UI 上就没有任何一项是选中态，
@@ -667,7 +702,7 @@ export const usePhotoStore = defineStore('photo', () => {
       const byName = new Map(bgColors.value.map((c) => [c.name, c]))
       const allowedGroups = new Set(
         allowed
-          .map((n) => byName.get(n)?.group)
+          .map((n) => byName.get(n)?.group || GROUP_NAME_ALIAS[n])
           .filter((g): g is string => !!g && g !== '其他'),
       )
       const preferred = PRIMARY_BG_COLORS.find((name) => {
@@ -708,6 +743,7 @@ export const usePhotoStore = defineStore('photo', () => {
     customWidth,
     customHeight,
     resizeMode,
+    maxKb,
     // 计算属性
     currentTemplate,
     availableBgColors,
