@@ -47,7 +47,7 @@ jobs:
             -o TCPKeepAlive=yes \
             "$SSH_USER@$SSH_HOST" 'echo "SSH 连通，服务器主机名：$(hostname)"'
 
-      - name: 通知服务器 git pull 并部署
+      - name: 服务器准备（自愈权限 + 允许 push 更新工作区）
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
           SSH_PORT: ${{ secrets.SSH_PORT }}
@@ -55,8 +55,42 @@ jobs:
         run: |
           set -euo pipefail
           PORT="${SSH_PORT:-22}"
-          # 代码由服务器自己 git pull 拉取（只传差异，比 rsync 全量同步快得多，
-          # 也没有整目录传输中途断连的风险）。.env / 模型文件不在 git 里，pull 不会动它们。
+          ssh -i ~/.ssh/id_deploy -p "$PORT" \
+            -o StrictHostKeyChecking=accept-new \
+            "$SSH_USER@$SSH_HOST" bash -s <<'REMOTE'
+          set -e
+          cd /opt/zhengjianzhao/photo-zhijianzhao
+          echo "==> 部署用户：$(id)"
+          # 自愈：工作区可能残留经 1Panel 上传的 root 属主文件或 immutable 属性，
+          # 会让 git 更新工作区报 "unable to unlink ... Permission denied"（2026-11-12 踩坑）。
+          # 部署用户是非 root（uid=1000，在 sudo 组），修复必须走 sudo -n。
+          SUDO=""
+          if sudo -n true 2>/dev/null; then SUDO="sudo -n"; fi
+          $SUDO chattr -R -i . 2>/dev/null || true
+          $SUDO chown -R "$(id -u):$(id -g)" . 2>/dev/null || true
+          chmod -R u+rwX . 2>/dev/null || true
+          # 允许 Actions 直接 git push 到本仓库并同步更新工作区：
+          # 服务器到 github.com 的网络不稳定（多次部署失败根因），
+          # 改为由 Actions 构建机（GitHub 侧网络好）推代码过来。
+          git config receive.denyCurrentBranch updateInstead
+          # 清理上次失败遗留的半更新工作区
+          git reset --hard HEAD
+          echo "==> 服务器准备完成，HEAD=$(git rev-parse --short HEAD)"
+          REMOTE
+
+      - name: 推送代码到服务器并部署
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+        run: |
+          set -euo pipefail
+          PORT="${SSH_PORT:-22}"
+          # push 模式：Actions 构建机直接推代码到服务器仓库（updateInstead 自动更新工作区），
+          # .env / 模型文件不在 git 里，push 不会动它们。
+          export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/id_deploy -p $PORT -o StrictHostKeyChecking=accept-new"
+          echo "==> 推送 $(git rev-parse --short HEAD) 到服务器"
+          git push "ssh://$SSH_USER@$SSH_HOST/opt/zhengjianzhao/photo-zhijianzhao" HEAD:main
           # nohup 让部署脚本脱离 SSH 会话在服务器上独立运行：
           #   即使 Actions 的 SSH 断了，服务器上的部署也不会被带走。
           # 随后每 15 秒输出一次心跳 + 日志尾部，保持 SSH 通道有流量，双保险。
@@ -68,14 +102,7 @@ jobs:
             "$SSH_USER@$SSH_HOST" bash -s <<'REMOTE'
           set -euo pipefail
           cd /opt/zhengjianzhao/photo-zhijianzhao
-          # —— 部署前自愈：工作区可能残留经 1Panel 上传的 root 属主文件或 immutable 属性，
-          #    会让 git pull/reset --hard 报 "unable to unlink ... Permission denied"
-          #    （2026-11-12 实际踩坑）。先统一属主/属性，幂等，正常时无副作用。
-          echo "==> 部署用户：$(id)"
-          chattr -R -i . 2>/dev/null || true
-          chown -R "$(id -u):$(id -g)" . 2>/dev/null || true
-          chmod -R u+rwX . 2>/dev/null || true
-          nohup bash deploy/git-pull-deploy.sh > /tmp/deploy.log 2>&1 < /dev/null &
+          nohup bash deploy/deploy.sh > /tmp/deploy.log 2>&1 < /dev/null &
           PID=$!
           echo "==> 部署进程 PID=$PID，开始跟随日志"
           while kill -0 "$PID" 2>/dev/null; do
