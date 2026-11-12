@@ -75,6 +75,10 @@ jobs:
           git config receive.denyCurrentBranch updateInstead
           # 清理上次失败遗留的半更新工作区
           git reset --hard HEAD
+          # 服务器 main 可能有本地私有提交（与 GitHub 分叉），push 前留备份分支再强推
+          echo "==> 服务器 main 当前指向：$(git rev-parse main 2>/dev/null || echo none)"
+          git log --oneline -3 main 2>/dev/null || true
+          git branch -f "backup/before-push-$(date +%Y%m%d-%H%M%S)" main 2>/dev/null || true
           echo "==> 服务器准备完成，HEAD=$(git rev-parse --short HEAD)"
           REMOTE
 
@@ -90,7 +94,8 @@ jobs:
           # .env / 模型文件不在 git 里，push 不会动它们。
           export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/id_deploy -p $PORT -o StrictHostKeyChecking=accept-new"
           echo "==> 推送 $(git rev-parse --short HEAD) 到服务器"
-          git push "ssh://$SSH_USER@$SSH_HOST/opt/zhengjianzhao/photo-zhijianzhao" HEAD:main
+          # --force：服务器 main 可能有本地私有提交（准备阶段已留 backup/before-push-* 分支）
+          git push --force "ssh://$SSH_USER@$SSH_HOST/opt/zhengjianzhao/photo-zhijianzhao" HEAD:main
           # nohup 让部署脚本脱离 SSH 会话在服务器上独立运行：
           #   即使 Actions 的 SSH 断了，服务器上的部署也不会被带走。
           # 随后每 15 秒输出一次心跳 + 日志尾部，保持 SSH 通道有流量，双保险。
