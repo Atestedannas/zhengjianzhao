@@ -77,6 +77,9 @@ jobs:
           # 服务器到 github.com 的网络不稳定（多次部署失败根因），
           # 改为由 Actions 构建机（GitHub 侧网络好）推代码过来。
           git config receive.denyCurrentBranch updateInstead
+          # 清理之前失败部署留下的未跟踪残留文件（updateInstead 拒绝覆盖未跟踪文件）。
+          # 只清代码/dist 目录：backend/.env、backend/models 不在其中，绝不动它们。
+          git clean -fd backend/app backend/tests web-pc/dist admin/dist frontend/dist docs deploy 2>/dev/null || true
           # 清理上次失败遗留的半更新工作区
           git reset --hard HEAD
           # 服务器 main 可能有本地私有提交（与 GitHub 分叉），push 前留备份分支再强推
