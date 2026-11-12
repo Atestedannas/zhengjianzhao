@@ -25,6 +25,10 @@ jobs:
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
+        with:
+          # 必须完整克隆：默认 depth=1 的浅克隆无法 git push 到服务器
+          # （服务器拒绝 shallow update，2026-11-12 踩坑）
+          fetch-depth: 0
 
       - name: 配置 SSH
         env:
