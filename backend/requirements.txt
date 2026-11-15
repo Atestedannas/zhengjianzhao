@@ -11,7 +11,10 @@ pydantic-settings==2.5.0
 # IANA 时区数据库：每日免费次数按 DAILY_BONUS_TIMEZONE（默认 Asia/Shanghai）划分「一天」。
 # python:3.10-slim 镜像里没有 tzdata，缺了会回退固定 UTC+8（见 core/pricing_config.py）
 tzdata>=2024.1
-redis==5.2.0
+# redis-py 必须 >=6.1.0：celery[redis]==5.4.0 解析出的 kombu 5.5+ 要求 redis-py 6.1.0+，
+# 锁 5.2.0 会触发 kombu.exceptions.VersionMismatch，导致 celery-worker 崩溃重启循环。
+# 锁死 6.4.0 触发镜像重建（2026-11-15：服务器旧镜像仍是 redis 5.2.0，celery 崩溃循环）。
+redis==6.4.0
 python-jose[cryptography]==3.3.0
 # 直接用 bcrypt 做密码哈希（见 app/core/security.py）。
 # 【不要】再引入 passlib：passlib 1.7.4 已停止维护，且其 bcrypt 后端
