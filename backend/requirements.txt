@@ -38,4 +38,6 @@ loguru==0.7.2
 aiofiles==24.1.0
 python-multipart==0.0.9
 openpyxl==3.1.5
-alipay-sdk-python==3.6.0
+# 【不要】再引入 alipay-sdk-python：支付走自实现签名（app/core/payment/alipay.py，
+# 基于 cryptography+httpx），SDK 完全没用到；且 3.6.0 依赖的 pycrypto 只有源码包，
+# 在 python:3.10-slim（无 gcc）+ 新版 pip 下无法编译，会让整个镜像构建失败（2026-11-15 踩坑）。
