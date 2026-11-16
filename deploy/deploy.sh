@@ -123,7 +123,12 @@ fi
 # ---------- 4. 重建镜像（仅必要时） ----------
 if [ "$NEED_BUILD" -eq 1 ]; then
   log "4/6 重建后端镜像（只有依赖变化才走到这里）"
-  "${DC[@]}" -p "$PROJECT_NAME" -f "$COMPOSE_FILE" build "${SERVICES[@]}"
+  # BUILDKIT_PROGRESS=plain：buildkit 默认进度条用 \r 覆盖行，失败时真实报错被吃掉，
+  # plain 模式输出完整日志便于诊断（2026-11-15 pip 失败只见 exit 1 不见原因的教训）。
+  # 构建前打印磁盘/内存，磁盘写满或 OOM 时一眼可见。
+  df -h / /opt 2>/dev/null || df -h
+  free -h 2>/dev/null || true
+  BUILDKIT_PROGRESS=plain "${DC[@]}" -p "$PROJECT_NAME" -f "$COMPOSE_FILE" build "${SERVICES[@]}"
   printf '%s' "$BUILD_FP" > "$BUILD_STAMP"
 else
   log "4/6 跳过镜像重建（代码/模型是挂载进容器的，改代码无需 build）"
